@@ -1,0 +1,22 @@
+menu "Android"
+
+config ANDROID_TIMED_OUTPUT
+	bool "Timed output class driver"
+	default y
+	help
+	  Say Y here to enable the timed output class driver, providing the
+	  /sys/class/timed_output sysfs interface used by the Android vibrator
+	  HAL. Required by the Rockchip GPIO vibrator driver.
+
+config ANDROID_TIMED_GPIO
+	tristate "Android timed gpio driver"
+	depends on GPIOLIB || COMPILE_TEST
+	depends on ANDROID_TIMED_OUTPUT
+	default n
+	help
+	  Timed output/gpio is a system to allow changing a GPIO for a specified
+	  number of milliseconds from user space via /sys/class/timed_output.
+	  On the Anbernic RK356x handhelds this drives the rk-vibrator-gpio
+	  rumble motor (rk_timed_gpio).
+
+endmenu
