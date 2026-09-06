@@ -12,6 +12,7 @@
 #include <linux/extcon.h>
 #include <linux/fb.h>
 #include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/iio/consumer.h>
 #include <linux/iio/iio.h>
 #include <linux/irq.h>
@@ -2605,6 +2606,119 @@ static int rk817_battery_time_to_full(struct rk817_battery_device *battery)
 	return time_sec;
 }
 
+/*
+ * Anbernic RG DS status-LED control - parity with the stock kernel.
+ *
+ * Three single-colour status LEDs hang off GPIO0 (also registered as the
+ * gpio-leds class devices battery_full / battery_charging / low_power).
+ * The stock kernel drives them straight from the fuel-gauge and charger
+ * drivers using the reported capacity and charge state:
+ *
+ *   green  (battery_full,     GPIO0 line 20) : charging and SoC >= 90%
+ *   yellow (battery_charging, GPIO0 line 21) : charging and SoC <  90%
+ *   red    (low_power,        GPIO0 line 22) : discharging and SoC < 20%
+ *
+ * The line numbers are the fixed global GPIO numbers the stock kernel uses
+ * (gpiochip0 has base 0 on RK3566, verified against the running device's
+ * /sys/kernel/debug/gpio).  gpiod_set_raw_value() acts on the bare
+ * descriptor because the gpio-leds driver already owns the lines.
+ */
+#define RGDS_LED_GREEN_GPIO	20	/* battery_full     */
+#define RGDS_LED_YELLOW_GPIO	21	/* battery_charging */
+#define RGDS_LED_RED_GPIO	22	/* low_power        */
+#define RGDS_LED_FULL_SOC	90
+#define RGDS_LED_LOW_SOC	20
+
+static int rgds_led_soc;
+static int rgds_led_charger;
+static int rgds_led_ready;
+static int rgds_led_factory;
+static int rgds_led_red_state;
+static int rgds_led_green_state;
+static int rgds_led_yellow_state;
+
+static void rgds_led_gpio_set(unsigned int gpio, int on)
+{
+	struct gpio_desc *desc = gpio_to_desc(gpio);
+
+	if (desc)
+		gpiod_set_raw_value(desc, on);
+}
+
+void led_red_on(int on)
+{
+	rgds_led_gpio_set(RGDS_LED_RED_GPIO, on);
+	rgds_led_red_state = on;
+}
+EXPORT_SYMBOL(led_red_on);
+
+void led_green_on(int on)
+{
+	rgds_led_gpio_set(RGDS_LED_GREEN_GPIO, on);
+	rgds_led_green_state = on;
+}
+EXPORT_SYMBOL(led_green_on);
+
+void led_yellow_on(int on)
+{
+	rgds_led_gpio_set(RGDS_LED_YELLOW_GPIO, on);
+	rgds_led_yellow_state = on;
+}
+EXPORT_SYMBOL(led_yellow_on);
+
+void led_update_charger_soc_status(void)
+{
+	int soc = rgds_led_soc;
+	int charger = rgds_led_charger;
+
+	pr_info("   led_update_charger_soc_status   charger=%d     soc= %d    factory=%d \n",
+		charger, soc, rgds_led_factory);
+
+	if (rgds_led_factory)
+		return;
+
+	if (charger) {
+		led_red_on(0);
+		if (soc >= RGDS_LED_FULL_SOC) {
+			led_green_on(1);
+			led_yellow_on(0);
+		} else {
+			led_green_on(0);
+			led_yellow_on(1);
+		}
+	} else {
+		if (soc < RGDS_LED_LOW_SOC)
+			led_red_on(1);
+		else
+			led_red_on(0);
+		led_green_on(0);
+		led_yellow_on(0);
+	}
+}
+EXPORT_SYMBOL(led_update_charger_soc_status);
+
+void led_update_soc(int soc)
+{
+	rgds_led_soc = soc;
+	if (rgds_led_ready)
+		led_update_charger_soc_status();
+}
+EXPORT_SYMBOL(led_update_soc);
+
+void led_chargr_status(int charger)
+{
+	pr_info(" led_chargr_status  %d \n", charger);
+	rgds_led_charger = !!charger;
+	led_update_charger_soc_status();
+}
+EXPORT_SYMBOL(led_chargr_status);
+
+int get_led_chargr_status(void)
+{
+	return rgds_led_charger;
+}
+EXPORT_SYMBOL(get_led_chargr_status);
+
 static int rk817_battery_get_property(struct power_supply *psy,
 				      enum power_supply_property psp,
 				      union power_supply_propval *val)
@@ -2626,6 +2740,7 @@ static int rk817_battery_get_property(struct power_supply *psy,
 		val->intval = (battery->dsoc + 400) / 1000;
 		if (battery->pdata->bat_mode == MODE_VIRTUAL)
 			val->intval = VIRTUAL_SOC;
+		led_update_soc(val->intval);
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY_LEVEL:
 		val->intval = rk817_get_capacity_leve(battery);
@@ -3420,6 +3535,9 @@ static int rk817_battery_probe(struct platform_device *pdev)
 	DBG("name: 0x%x", rk817_bat_field_read(battery, CHIP_NAME_H));
 	DBG("%x\n", rk817_bat_field_read(battery, CHIP_NAME_L));
 	BAT_INFO("driver version %s\n", DRIVER_VERSION);
+
+	/* status LEDs are safe to drive once the gauge is up */
+	rgds_led_ready = 1;
 
 	return 0;
 }

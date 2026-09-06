@@ -46,6 +46,9 @@ module_param_named(dbg_level, dbg_enable, int, 0644);
 
 #define CHARGE_DRIVER_VERSION		"1.0"
 
+/* status LEDs live in the rk817 battery driver (parity with stock) */
+extern void led_chargr_status(int charger);
+
 #define DISABLE	0x00
 #define ENABLE	0x01
 #define OTG_SLP_ENABLE	0x01
@@ -854,6 +857,8 @@ static void rk817_charge_set_chrg_param(struct rk817_charger *charge,
 
 	if (rk817_charge_online(charge) && rk817_charge_get_dsoc(charge) == 100)
 		charge->prop_status = POWER_SUPPLY_STATUS_FULL;
+
+	led_chargr_status(rk817_charge_online(charge));
 }
 
 static void rk817_charge_set_otg_state(struct rk817_charger *charge, int state)
