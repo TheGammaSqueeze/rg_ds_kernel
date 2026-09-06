@@ -66,6 +66,19 @@ static u8 gtp_change_x2y = TRUE;
 static u8 gtp_x_reverse = FALSE;
 static u8 gtp_y_reverse = TRUE;
 
+/*
+ * RG DS: force the GT911 controllers into POLLING mode at gtp_poll_hz instead
+ * of INT/IRQ, replicating the stock GammaOS kernel's forced-polling touch
+ * patch ("touch panels now run at 120Hz" for smoother touch).  Live-tunable at
+ * /sys/module/gt9xx/parameters/gtp_poll_hz to experiment with higher rates
+ * without a rebuild; the poll period is recomputed every cycle.  0 restores
+ * IRQ mode.  120Hz is near the GT911's useful ceiling (Refresh_Rate reg = 0x00
+ * = fastest scan), so higher values mainly risk duplicate reads + CPU.
+ */
+static int gtp_poll_hz = 120;
+module_param(gtp_poll_hz, int, 0644);
+MODULE_PARM_DESC(gtp_poll_hz, "GT9xx forced touch polling rate in Hz (0 = use IRQ)");
+
 static const char *goodix_ts_name = "goodix-ts";
 static struct workqueue_struct *goodix_wq;
 struct i2c_client * gtp_i2c_connect_client = NULL; 
@@ -1050,7 +1063,14 @@ static enum hrtimer_restart goodix_ts_timer_handler(struct hrtimer *timer)
     GTP_DEBUG_FUNC();
 
     queue_work(goodix_wq, &ts->work);
-    hrtimer_start(&ts->timer, ktime_set(0, (GTP_POLL_TIME+6)*1000000), HRTIMER_MODE_REL);
+    /* RG DS: poll at gtp_poll_hz (default 120Hz); recomputed each cycle so the
+     * rate is live-tunable. Fall back to the legacy period if disabled. */
+    if (gtp_poll_hz > 0)
+        hrtimer_start(&ts->timer, ktime_set(0, NSEC_PER_SEC / gtp_poll_hz),
+                      HRTIMER_MODE_REL);
+    else
+        hrtimer_start(&ts->timer, ktime_set(0, (GTP_POLL_TIME+6)*1000000),
+                      HRTIMER_MODE_REL);
     return HRTIMER_NORESTART;
 }
 
@@ -1887,7 +1907,19 @@ static s8 gtp_request_irq(struct goodix_ts_data *ts)
 
     GTP_DEBUG_FUNC();
     GTP_DEBUG("INT trigger type:%x", ts->int_trigger_type);
-    
+
+    /*
+     * RG DS: force POLLING mode (skip the INT/IRQ path) so touch runs at
+     * gtp_poll_hz, matching the stock kernel's forced-polling 120Hz patch.
+     * Uses the existing polling fallback below (frees the INT gpio, arms the
+     * hrtimer).  gtp_poll_hz = 0 falls through to normal IRQ mode.
+     */
+    if (gtp_poll_hz > 0) {
+        GTP_INFO("RG DS: forcing %d Hz touch polling (no IRQ)", gtp_poll_hz);
+        ret = 1;
+        goto test_pit;
+    }
+
     ts->irq=gpio_to_irq(ts->irq_pin);       //If not defined in client
     if (ts->irq)
     {
@@ -1925,7 +1957,7 @@ test_pit:
 
         hrtimer_init(&ts->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
         ts->timer.function = goodix_ts_timer_handler;
-        hrtimer_start(&ts->timer, ktime_set(1, 0), HRTIMER_MODE_REL);
+        hrtimer_start(&ts->timer, ktime_set(0, 30 * 1000000), HRTIMER_MODE_REL);
         return -1;
     }
     else 
@@ -2039,7 +2071,7 @@ static int goodix_ts_early_resume(struct tp_device *tp_d)
     }
     else
     {
-        hrtimer_start(&ts->timer, ktime_set(1, 0), HRTIMER_MODE_REL);
+        hrtimer_start(&ts->timer, ktime_set(0, 30 * 1000000), HRTIMER_MODE_REL);
     }
 
     ts->gtp_is_suspend = 0;
