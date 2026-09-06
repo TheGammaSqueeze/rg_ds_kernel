@@ -2109,7 +2109,19 @@ static s8 gtp_request_input_dev(struct i2c_client *client,
     input_set_abs_params(ts->input_dev, ABS_MT_TRACKING_ID, 0, 255, 0, 0);
 
     sprintf(phys, "input/ts");
-    ts->input_dev->name = goodix_ts_name;
+    /*
+     * Name the input device after its DT node ("gt9xx-0" / "gt9xx-1") to match
+     * the stock kernel.  The RG DS has two touch controllers, one per screen;
+     * this base named both "goodix-ts", so InputFlinger could not tell them
+     * apart and failed to associate each with its display (touch worked in the
+     * DRM nano menu, which reads the node raw, but died once an app owned a
+     * display).  Stock reports distinct gt9xx-0/gt9xx-1 devices, each bound to
+     * its viewport.  Fall back to goodix_ts_name only if there is no OF node.
+     */
+    if (client->dev.of_node && client->dev.of_node->name)
+        ts->input_dev->name = client->dev.of_node->name;
+    else
+        ts->input_dev->name = goodix_ts_name;
     ts->input_dev->phys = phys;
     ts->input_dev->id.bustype = BUS_I2C;
     ts->input_dev->id.vendor = 0xDEAD;
