@@ -32,6 +32,23 @@
 #define	ADC_MAX_VOLTAGE		1800
 #define	ADC_DATA_TUNING(x, p)	((x * p) / 100)
 #define	ADC_TUNING_DEFAULT	180
+/*
+ * Analog report range. The RG DS SARADC is 10-bit (raw 0..1023, rest ~512), so
+ * the usable per-axis deviation is +-512. The stock kernel reports each stick
+ * axis on a (button-adc-scale << 14) = 0x4000 range, i.e. it left-shifts the
+ * 10-bit deviation by 5 (512 << 5 == 0x4000). Match that here so the analog
+ * axes span their full range with the unmodified stock device tree.
+ */
+#define	ADC_ABS_RANGE		0x4000
+#define	ADC_RAW_SHIFT		5
+/*
+ * The RG DS SARADC carries a few LSB of rest jitter. Once shifted up to the
+ * report range that shows as stick drift, whereas the stock kernel reads a
+ * rock-steady 0 at rest. Apply a small raw-count deadzone (removed then the
+ * remainder rescaled so travel still starts from 0 just past the deadzone) so
+ * the axes sit at exactly 0 when centred.
+ */
+#define	ADC_DEADZONE_RAW	24
 
 struct bt_adc {
 	/* report value (mV) */
@@ -70,6 +87,9 @@ struct bt_gpio {
 	int report_type;
 	/* report linux code */
 	int linux_code;
+	/* DT linux,abs-value: for EV_ABS (D-pad HAT) buttons the pressed value
+	 * to report (2 => -1, 1 => +1); unused for EV_KEY buttons */
+	int abs_value;
 	/* prev button value */
 	bool old_value;
 	/* button press level */
@@ -566,10 +586,26 @@ static void joypad_gpio_check(struct joypad *joypad)
 		}
 		value = gpio_get_value(gpio->num);
 		if (value != gpio->old_value) {
+			int report;
+
+			if (gpio->report_type == EV_ABS) {
+				/* D-pad reported as an ABS_HAT axis: two opposing
+				 * buttons share one code, so the DT linux,abs-value
+				 * encodes the direction (2 => negative, 1 =>
+				 * positive). Emit the signed value on press, 0 on
+				 * release. */
+				if (value == gpio->active_level)
+					report = (gpio->abs_value == 2) ?
+							-1 : gpio->abs_value;
+				else
+					report = 0;
+			} else {
+				report = (value == gpio->active_level) ? 1 : 0;
+			}
 			input_event(joypad->input,
 				gpio->report_type,
 				gpio->linux_code,
-				(value == gpio->active_level) ? 1 : 0);
+				report);
 			gpio->old_value = value;
 		}
 	}
@@ -591,17 +627,32 @@ static void joypad_adc_check(struct joypad *joypad)
 		}
 		adc->value = adc->value - adc->cal;
 
-		/* Joystick Deadzone check */
-		if (joypad->bt_adc_deadzone) {
-			if (abs(adc->value) < joypad->bt_adc_deadzone)
+		/*
+		 * Deadzone: zero (and then offset-remove) small deviations so a
+		 * centred stick reports exactly 0, matching the stock kernel. The
+		 * DT button-adc-deadzone is 1 which is smaller than this SARADC's
+		 * rest jitter, so enforce a sensible raw floor.
+		 */
+		{
+			int dz = joypad->bt_adc_deadzone;
+
+			if (dz < ADC_DEADZONE_RAW)
+				dz = ADC_DEADZONE_RAW;
+			if (abs(adc->value) < dz)
 				adc->value = 0;
+			else
+				adc->value += (adc->value > 0) ? -dz : dz;
 		}
 
-		/* adc data tuning */
-		if (adc->tuning_n && adc->value < 0)
-			adc->value = ADC_DATA_TUNING(adc->value, adc->tuning_n);
-		if (adc->tuning_p && adc->value > 0)
-			adc->value = ADC_DATA_TUNING(adc->value, adc->tuning_p);
+		/* Scale the raw 10-bit ADC deviation (+-512) up to the report
+		 * range (+-ADC_ABS_RANGE). The stock kernel reports on a
+		 * (scale << 14) axis, i.e. the 10-bit deviation shifted left by
+		 * ADC_RAW_SHIFT (512 << 5 == 0x4000). The DT tuning values are 1
+		 * on this platform, so the old (value * tuning / 100) step just
+		 * collapsed the axis to ~1% and is intentionally dropped. */
+		adc->value <<= ADC_RAW_SHIFT;
+		if (adc->scale)
+			adc->value *= adc->scale;
 
 		adc->value = adc->value > adc->max ? adc->max : adc->value;
 		adc->value = adc->value < adc->min ? adc->min : adc->value;
@@ -774,8 +825,10 @@ static int joypad_adc_setup(struct device *dev, struct joypad *joypad)
 
 		adc->scale = joypad->bt_adc_scale;
 		
-		adc->max = (ADC_MAX_VOLTAGE / 2);
-		adc->min = (ADC_MAX_VOLTAGE / 2) * (-1);
+		/* Sticks (ch0..3) are bipolar; triggers (ch4/5 ABS_Z/RZ) are
+		 * unipolar 0..range, matching the stock kernel. */
+		adc->max = ADC_ABS_RANGE;
+		adc->min = (nbtn < 4) ? -ADC_ABS_RANGE : 0;
 		if (adc->scale) {
 			adc->max *= adc->scale;
 			adc->min *= adc->scale;
@@ -784,18 +837,13 @@ static int joypad_adc_setup(struct device *dev, struct joypad *joypad)
 		adc->invert = false;
 
 		switch (nbtn) {
+			/*
+			 * Base driver mapping, with the RIGHT stick's two channels
+			 * swapped (ch0<->ch1): ch0=ABS_RX, ch1=ABS_RY. That is the
+			 * only change needed to un-rotate the right stick. Left stick
+			 * (ch2=ABS_Y, ch3=ABS_X) is unchanged from base.
+			 */
 			case 0:
-				adc->report_type = ABS_RY;
-				if (device_property_read_u32(dev,
-					"abs_ry-p-tuning",
-					&adc->tuning_p))
-					adc->tuning_p = ADC_TUNING_DEFAULT;
-				if (device_property_read_u32(dev,
-					"abs_ry-n-tuning",
-					&adc->tuning_n))
-					adc->tuning_n = ADC_TUNING_DEFAULT;
-				break;
-			case 1:
 				adc->report_type = ABS_RX;
 				if (device_property_read_u32(dev,
 					"abs_rx-p-tuning",
@@ -806,9 +854,20 @@ static int joypad_adc_setup(struct device *dev, struct joypad *joypad)
 					&adc->tuning_n))
 					adc->tuning_n = ADC_TUNING_DEFAULT;
 				break;
+			case 1:
+				adc->report_type = ABS_RY;
+				if (device_property_read_u32(dev,
+					"abs_ry-p-tuning",
+					&adc->tuning_p))
+					adc->tuning_p = ADC_TUNING_DEFAULT;
+				if (device_property_read_u32(dev,
+					"abs_ry-n-tuning",
+					&adc->tuning_n))
+					adc->tuning_n = ADC_TUNING_DEFAULT;
+				break;
 			case 2:
 			#ifdef __LEFT_JOYSTICK_INVERT__
-				adc->invert = true;	
+				adc->invert = true;
 			#endif
 				adc->report_type = ABS_Y;
 				if (device_property_read_u32(dev,
@@ -822,7 +881,7 @@ static int joypad_adc_setup(struct device *dev, struct joypad *joypad)
 				break;
 			case 3:
 			#ifdef __LEFT_JOYSTICK_INVERT__
-				adc->invert = true;	
+				adc->invert = true;
 			#endif
 				adc->report_type = ABS_X;
 				if (device_property_read_u32(dev,
@@ -831,6 +890,28 @@ static int joypad_adc_setup(struct device *dev, struct joypad *joypad)
 					adc->tuning_p = ADC_TUNING_DEFAULT;
 				if (device_property_read_u32(dev,
 					"abs_x-n-tuning",
+					&adc->tuning_n))
+					adc->tuning_n = ADC_TUNING_DEFAULT;
+				break;
+			case 4:
+				adc->report_type = ABS_Z;
+				if (device_property_read_u32(dev,
+					"abs_z-p-tuning",
+					&adc->tuning_p))
+					adc->tuning_p = ADC_TUNING_DEFAULT;
+				if (device_property_read_u32(dev,
+					"abs_z-n-tuning",
+					&adc->tuning_n))
+					adc->tuning_n = ADC_TUNING_DEFAULT;
+				break;
+			case 5:
+				adc->report_type = ABS_RZ;
+				if (device_property_read_u32(dev,
+					"abs_rz-p-tuning",
+					&adc->tuning_p))
+					adc->tuning_p = ADC_TUNING_DEFAULT;
+				if (device_property_read_u32(dev,
+					"abs_rz-n-tuning",
 					&adc->tuning_n))
 					adc->tuning_n = ADC_TUNING_DEFAULT;
 				break;
@@ -898,6 +979,9 @@ static int joypad_gpio_setup(struct device *dev, struct joypad *joypad)
 		if (of_property_read_u32(pp, "linux,input-type",
 				&gpio->report_type))
 			gpio->report_type = EV_KEY;
+		if (of_property_read_u32(pp, "linux,abs-value",
+				&gpio->abs_value))
+			gpio->abs_value = 1;
 	}
 	if (nbtn == 0)
 		return -EINVAL;
