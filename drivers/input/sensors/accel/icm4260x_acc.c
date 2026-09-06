@@ -282,7 +282,13 @@ static int sensor_init(struct i2c_client *client)
 	    (struct sensor_private_data *) i2c_get_clientdata(client);
 
 	device_id = sensor_read_reg(client, ICM4260X_WHO_AM_I);
-	if (device_id != ICM42607_DEVICE_ID) {
+	/*
+	 * The ICM-42607 on the RG DS reports WHO_AM_I 0x60 (the datasheet value);
+	 * accept it as well as the 0x61 the base define carries. Without this the
+	 * accel probe fails ("check id err, read_id: 96") while the gyro (which
+	 * skips the id check) works - stock accepts 0x60, so match it.
+	 */
+	if (device_id != ICM42607_DEVICE_ID && device_id != 0x60) {
 		dev_err(&client->dev, "%s: check id err, read_id: %d\n",
 			__func__, device_id);
 		return -1;
