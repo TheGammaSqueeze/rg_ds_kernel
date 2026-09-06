@@ -2664,9 +2664,16 @@ static int goodix_ts_probe(struct i2c_client *client, const struct i2c_device_id
 	} else if (val == 911) {
 		m89or101 = FALSE;
 		bgt911 = TRUE;
-		gtp_change_x2y = TRUE;
+		/*
+		 * RG DS GT911: the panel is natively 640x480 (landscape) and the
+		 * controller already reports in that orientation, so do NOT swap
+		 * X/Y here.  The stock kernel reports 640x480 un-swapped; this
+		 * base defaulted to change_x2y=TRUE which rotated touch 90 degrees
+		 * (reported 480x640) and broke the orientation.  Match stock.
+		 */
+		gtp_change_x2y = FALSE;
 		gtp_x_reverse = FALSE;
-		gtp_y_reverse = TRUE;
+		gtp_y_reverse = FALSE;
 	} else if (val == 9110) {
 		m89or101 = FALSE;
 		bgt9110 = TRUE;
