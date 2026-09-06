@@ -111,6 +111,38 @@ static inline bool bio_has_crypt_ctx(struct bio *bio)
 
 #endif /* CONFIG_BLK_INLINE_ENCRYPTION */
 
+#if IS_ENABLED(CONFIG_DM_DEFAULT_KEY)
+static inline void bio_set_skip_dm_default_key(struct bio *bio)
+{
+	bio->bi_skip_dm_default_key = true;
+}
+
+static inline bool bio_should_skip_dm_default_key(const struct bio *bio)
+{
+	return bio->bi_skip_dm_default_key;
+}
+
+static inline void bio_clone_skip_dm_default_key(struct bio *dst,
+						 const struct bio *src)
+{
+	dst->bi_skip_dm_default_key = src->bi_skip_dm_default_key;
+}
+#else /* CONFIG_DM_DEFAULT_KEY */
+static inline void bio_set_skip_dm_default_key(struct bio *bio)
+{
+}
+
+static inline bool bio_should_skip_dm_default_key(const struct bio *bio)
+{
+	return false;
+}
+
+static inline void bio_clone_skip_dm_default_key(struct bio *dst,
+						 const struct bio *src)
+{
+}
+#endif /* !CONFIG_DM_DEFAULT_KEY */
+
 int __bio_crypt_clone(struct bio *dst, struct bio *src, gfp_t gfp_mask);
 /**
  * bio_crypt_clone - clone bio encryption context
@@ -118,7 +150,8 @@ int __bio_crypt_clone(struct bio *dst, struct bio *src, gfp_t gfp_mask);
  * @src: source bio
  * @gfp_mask: memory allocation flags
  *
- * If @src has an encryption context, clone it to @dst.
+ * If @src has an encryption context, clone it to @dst.  Also clones the
+ * dm-default-key skip flag.
  *
  * Return: 0 on success, -ENOMEM if out of memory.  -ENOMEM is only possible if
  *	   @gfp_mask doesn't include %__GFP_DIRECT_RECLAIM.
@@ -126,6 +159,7 @@ int __bio_crypt_clone(struct bio *dst, struct bio *src, gfp_t gfp_mask);
 static inline int bio_crypt_clone(struct bio *dst, struct bio *src,
 				  gfp_t gfp_mask)
 {
+	bio_clone_skip_dm_default_key(dst, src);
 	if (bio_has_crypt_ctx(src))
 		return __bio_crypt_clone(dst, src, gfp_mask);
 	return 0;

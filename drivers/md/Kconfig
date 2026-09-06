@@ -607,6 +607,22 @@ config DM_LOG_WRITES
 
 	  If unsure, say N.
 
+config DM_DEFAULT_KEY
+	tristate "Default-key target support"
+	depends on BLK_DEV_DM
+	depends on BLK_INLINE_ENCRYPTION
+	# dm-default-key doesn't require -o inlinecrypt, but it does currently
+	# rely on the inline encryption hooks being built into the kernel.
+	depends on FS_ENCRYPTION_INLINE_CRYPT
+	help
+	  This device-mapper target allows you to create a device that
+	  assigns a default encryption key to bios that aren't for the
+	  contents of an encrypted file.  This is used to encrypt filesystem
+	  metadata (and, on ext4/f2fs, all data of unencrypted files) with a
+	  device-wide key, on top of per-file (fscrypt) encryption.
+
+	  If unsure, say N.
+
 config DM_INTEGRITY
 	tristate "Integrity target support"
 	depends on BLK_DEV_DM

@@ -19,4 +19,12 @@ config ANDROID_TIMED_GPIO
 	  On the Anbernic RK356x handhelds this drives the rk-vibrator-gpio
 	  rumble motor (rk_timed_gpio).
 
+config ASHMEM
+	bool "Enable the Anonymous Shared Memory Subsystem"
+	depends on SHMEM
+	help
+	  The ashmem subsystem is a new shared memory allocator, similar to
+	  POSIX SHM but with different behavior and sporting a simpler
+	  file-based API. Required by Android userspace.
+
 endmenu

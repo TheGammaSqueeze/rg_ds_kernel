@@ -30,3 +30,4 @@ obj-$(CONFIG_FIELDBUS_DEV)     += fieldbus/
 obj-$(CONFIG_QLGE)		+= qlge/
 obj-$(CONFIG_ANDROID_TIMED_OUTPUT)	+= android/
 obj-$(CONFIG_ANDROID_TIMED_GPIO)	+= android/
+obj-$(CONFIG_ASHMEM)			+= android/

@@ -745,6 +745,25 @@ static inline void fscrypt_set_ops(struct super_block *sb,
 
 #endif	/* !CONFIG_FS_ENCRYPTION */
 
+#if IS_ENABLED(CONFIG_DM_DEFAULT_KEY)
+/*
+ * An encrypted regular file's contents are encrypted by fscrypt, so its bios
+ * must skip the dm-default-key whole-device metadata-encryption layer to avoid
+ * double encryption.
+ */
+static inline bool
+fscrypt_inode_should_skip_dm_default_key(const struct inode *inode)
+{
+	return IS_ENCRYPTED(inode) && S_ISREG(inode->i_mode);
+}
+#else
+static inline bool
+fscrypt_inode_should_skip_dm_default_key(const struct inode *inode)
+{
+	return false;
+}
+#endif
+
 /* inline_crypt.c */
 #ifdef CONFIG_FS_ENCRYPTION_INLINE_CRYPT
 

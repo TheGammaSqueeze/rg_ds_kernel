@@ -270,6 +270,9 @@ void fscrypt_set_bio_crypt_ctx(struct bio *bio, const struct inode *inode,
 	const struct fscrypt_info *ci;
 	u64 dun[BLK_CRYPTO_DUN_ARRAY_SIZE];
 
+	if (fscrypt_inode_should_skip_dm_default_key(inode))
+		bio_set_skip_dm_default_key(bio);
+
 	if (!fscrypt_inode_uses_inline_crypto(inode))
 		return;
 	ci = inode->i_crypt_info;
@@ -352,6 +355,9 @@ bool fscrypt_mergeable_bio(struct bio *bio, const struct inode *inode,
 	const struct bio_crypt_ctx *bc = bio->bi_crypt_context;
 	u64 next_dun[BLK_CRYPTO_DUN_ARRAY_SIZE];
 
+	if (bio_should_skip_dm_default_key(bio) !=
+	    fscrypt_inode_should_skip_dm_default_key(inode))
+		return false;
 	if (!!bc != fscrypt_inode_uses_inline_crypto(inode))
 		return false;
 	if (!bc)
