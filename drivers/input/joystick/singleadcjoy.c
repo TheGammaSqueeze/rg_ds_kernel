@@ -855,6 +855,13 @@ static int joypad_adc_setup(struct device *dev, struct joypad *joypad)
 					adc->tuning_n = ADC_TUNING_DEFAULT;
 				break;
 			case 1:
+				/*
+				 * Right stick up/down (ABS_RY) reads inverted on the
+				 * RG DS (pushing up reports down); flip it, matching
+				 * how the left stick axes are inverted above.  X
+				 * (ABS_RX, case 0) is correct and left untouched.
+				 */
+				adc->invert = true;
 				adc->report_type = ABS_RY;
 				if (device_property_read_u32(dev,
 					"abs_ry-p-tuning",
