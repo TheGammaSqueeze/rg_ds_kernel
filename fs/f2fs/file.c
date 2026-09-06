@@ -2156,21 +2156,6 @@ static int f2fs_ioc_start_atomic_write(struct file *filp)
 	if (!(filp->f_mode & FMODE_WRITE))
 		return -EBADF;
 
-	/*
-	 * Decline f2fs atomic writes on this base.  The atomic-write COW +
-	 * roll-forward commit path in this tree loses durability for a file
-	 * that is actively rewritten right before a clean reboot (the eMMC is
-	 * non-zoned, so f2fs_do_sync_file() skips the device cache flush for
-	 * atomic commits and relies solely on roll-forward recovery).  In
-	 * practice keystore2's SQLite persistent.sqlite reads back as
-	 * SQLITE_NOTADB on ~1 in 7 reboots, which aborts keystore2 and sends
-	 * the device to recovery.  Stock survives reboots because its atomic
-	 * path is intact; here it is not.  Returning -EOPNOTSUPP makes callers
-	 * (Android SQLite) fall back to their normal journalled writes, whose
-	 * durability across reboot is verified good on this tree.
-	 */
-	return -EOPNOTSUPP;
-
 	if (!inode_owner_or_capable(mnt_userns, inode))
 		return -EACCES;
 
