@@ -46,6 +46,7 @@ snd-soc-ak5386-objs := ak5386.o
 snd-soc-ak5558-objs := ak5558.o
 snd-soc-arizona-objs := arizona.o arizona-jack.o
 snd-soc-aw8738-objs := aw8738.o
+snd-soc-aw87391-y := aw87391.o
 snd-soc-aw88395-lib-y := aw88395/aw88395_lib.o
 snd-soc-aw88395-y := aw88395/aw88395.o \
 			aw88395/aw88395_device.o
@@ -431,6 +432,7 @@ obj-$(CONFIG_SND_SOC_ALC5623)    += snd-soc-alc5623.o
 obj-$(CONFIG_SND_SOC_ALC5632)	+= snd-soc-alc5632.o
 obj-$(CONFIG_SND_SOC_ARIZONA)	+= snd-soc-arizona.o
 obj-$(CONFIG_SND_SOC_AW8738)	+= snd-soc-aw8738.o
+obj-$(CONFIG_SND_SOC_AW87391)	+= snd-soc-aw87391.o
 obj-$(CONFIG_SND_SOC_AW88395_LIB) += snd-soc-aw88395-lib.o
 obj-$(CONFIG_SND_SOC_AW88395)	+=snd-soc-aw88395.o
 obj-$(CONFIG_SND_SOC_AW88166)	+=snd-soc-aw88166.o

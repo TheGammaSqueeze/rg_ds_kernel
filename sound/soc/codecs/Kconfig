@@ -615,6 +615,16 @@ config SND_SOC_AW8738
 	  SND_SOC_SIMPLE_AMPLIFIER, but additionally allows setting the
 	  operation mode using the Awinic-specific one-wire pulse control.
 
+config SND_SOC_AW87391
+	tristate "SoC Audio for Awinic AW87391 speaker PA"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Enable support for the Awinic AW87391 speaker power amplifier as
+	  used on the Anbernic RG DS (two PAs, left and right).  Without this
+	  the external speaker amplifiers stay disabled and only headphones
+	  produce sound.
+
 config SND_SOC_AW88395_LIB
 	select CRC8
 	tristate
