@@ -43,17 +43,24 @@ struct aw87391_priv {
  * (i2cget -f -y 2 0x58/0x5b): 0x03=01, 0x04=45, 0x05=4e, 0x06=4a, 0x07=4a.
  * 0x02 is left at the chip default (0x58), matching stock.
  */
-static const struct aw87391_regval aw87391_init_reg[] = {
-	{ 0x03, 0x01 },
-	{ 0x04, 0x45 },
-	{ 0x05, 0x4e },
-	{ 0x06, 0x4a },
-	{ 0x07, 0x4a },
-};
-
-/* 0x01 system control: bit0 = PA enable. */
+/*
+ * Stock RG DS speaker-on (kspk) profile, decompiled 1:1 from the stock kernel's
+ * aw87391_kspk_reg and written in order on every power-up.  The trailing staged
+ * enable (0x03=0x00, then 0x01=0x07 -> 0x01=0x3f, then 0x03=0x01) together with
+ * the boost / DFT trim registers (0x5d..0x7d) is the ANTI-POP sequence: bring
+ * the boost up muted, soft-enable the PA, then full-enable and raise the boost.
+ * Our old one-shot 0x01=0x3f skipped all of this, which is why enabling from an
+ * off state popped.
+ */
 static const struct aw87391_regval aw87391_on_reg[] = {
-	{ 0x01, 0x3f },
+	{ 0x64, 0x3a }, { 0x02, 0x58 }, { 0x04, 0x45 }, { 0x05, 0x4e },
+	{ 0x5d, 0x00 }, { 0x5e, 0xb4 }, { 0x5f, 0x30 }, { 0x60, 0x39 },
+	{ 0x61, 0x10 }, { 0x62, 0x03 }, { 0x63, 0x7d }, { 0x65, 0xa0 },
+	{ 0x66, 0x21 }, { 0x67, 0x41 }, { 0x68, 0x3b }, { 0x6e, 0x00 },
+	{ 0x6f, 0x00 }, { 0x70, 0x00 }, { 0x71, 0x00 }, { 0x72, 0x34 },
+	{ 0x73, 0x06 }, { 0x74, 0x10 }, { 0x75, 0x00 }, { 0x7a, 0x00 },
+	{ 0x7b, 0x00 }, { 0x7c, 0x00 }, { 0x7d, 0x00 }, { 0x03, 0x00 },
+	{ 0x01, 0x07 }, { 0x01, 0x3f }, { 0x03, 0x01 },
 };
 
 static const struct aw87391_regval aw87391_off_reg[] = {
@@ -102,19 +109,17 @@ static int aw87391_enable(struct aw87391_priv *aw)
 	if (aw->vcc || aw->enable_gpiod)
 		usleep_range(1000, 2000);
 
-	if (!aw->initialized) {
-		ret = aw87391_apply_seq(aw, aw87391_init_reg,
-					ARRAY_SIZE(aw87391_init_reg));
-		if (ret)
-			goto err_power;
-
-		aw->initialized = true;
-	}
-
+	/*
+	 * Write the full stock speaker-on profile (config + staged anti-pop
+	 * enable) on every power-up, exactly as stock does.  Writing it each time
+	 * from the off state is what avoids the enable pop.
+	 */
 	ret = aw87391_apply_seq(aw, aw87391_on_reg,
 				ARRAY_SIZE(aw87391_on_reg));
 	if (ret)
 		goto err_power;
+
+	aw->initialized = true;
 
 	aw->powered = true;
 
