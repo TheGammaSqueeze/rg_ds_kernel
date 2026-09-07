@@ -2585,6 +2585,15 @@
 		rockchip,grf = <0x3a>;
 		status = "okay";
 		support-multi-area;
+		/*
+		 * Sync VP0 and VP1 scanout starts (vop2_crtc_sync): drop both VPs
+		 * to standby, wait for edpi_wms_fs, then release standby back-to-back
+		 * under local_irq_save so both DSI panels start their frame together
+		 * (both dclks share the PLL, so the alignment holds).  bit0=VP0,
+		 * bit1=VP1 -> 0x3 syncs both.  Fixes the top/bottom inter-screen
+		 * phase offset.  Verify: dmesg | grep "Sync crtc_mask" shows 0x3.
+		 */
+		rockchip,sync-vp-mask = /bits/ 8 <0x03>;
 		assigned-clocks = <0x24 0xdf 0x24 0xe0>;
 		assigned-clock-parents = <0x39 0x02 0x39 0x02>;
 		assigned-clock-rates = <0x29020c0 0x29020c0>;
@@ -7648,7 +7657,7 @@
 		abs_rx-n-tuning = <0x01>;
 		abs_ry-p-tuning = <0x01>;
 		abs_ry-n-tuning = <0x01>;
-		poll-interval = <0x05>;
+		poll-interval = <0x02>;
 		phandle = <0x32f>;
 
 		sw1 {
