@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (GPL-2.0+ OR MIT)
-// Anbernic RG DS (RK3566) board device tree - stock.
+// Anbernic RG DS (RK3566) board device tree - oc.
 // NOTE: decompiled-derived from the shipped runtime DTB (flattened, numeric
 // phandles). Buildable + inspectable source; a clean #include refactor is a
 // documented follow-up. See RG_DS_OVERCLOCK.md for the OC (2160/900+UV) delta.
@@ -452,21 +452,21 @@
 		opp-408000000 {
 			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x18519600>;
-			opp-microvolt = <0xbd358 0xbd358 0x118c30>;
+			opp-microvolt = <0xb71b0 0xb71b0 0x112a88>;
 			clock-latency-ns = <0x9c40>;
 		};
 
 		opp-600000000 {
 			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x23c34600>;
-			opp-microvolt = <0xc3500 0xc3500 0x118c30>;
+			opp-microvolt = <0xbd358 0xbd358 0x112a88>;
 			clock-latency-ns = <0x9c40>;
 		};
 
 		opp-816000000 {
 			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x30a32c00>;
-			opp-microvolt = <0xc3500 0xc3500 0x118c30>;
+			opp-microvolt = <0xbd358 0xbd358 0x112a88>;
 			clock-latency-ns = <0x9c40>;
 			opp-suspend;
 		};
@@ -474,35 +474,42 @@
 		opp-1104000000 {
 			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x41cdb400>;
-			opp-microvolt = <0xc3500 0xc3500 0x118c30>;
+			opp-microvolt = <0xbd358 0xbd358 0x112a88>;
 			clock-latency-ns = <0x9c40>;
 		};
 
 		opp-1416000000 {
 			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x54667200>;
-			opp-microvolt = <0xcf850 0xcf850 0x118c30>;
+			opp-microvolt = <0xc96a8 0xc96a8 0x112a88>;
 			clock-latency-ns = <0x9c40>;
 		};
 
 		opp-1608000000 {
 			opp-supported-hw = <0xf9 0xffff>;
 			opp-hz = <0x00 0x5fd82200>;
-			opp-microvolt = <0xdbba0 0xdbba0 0x118c30>;
+			opp-microvolt = <0xd59f8 0xd59f8 0x112a88>;
 			clock-latency-ns = <0x9c40>;
 		};
 
 		opp-1800000000 {
 			opp-supported-hw = <0xf9 0xffff>;
 			opp-hz = <0x00 0x6b49d200>;
-			opp-microvolt = <0xe1d48 0xe1d48 0x118c30>;
+			opp-microvolt = <0xdbba0 0xdbba0 0x112a88>;
 			clock-latency-ns = <0x9c40>;
 		};
 
 		opp-1992000000 {
 			opp-supported-hw = <0xf9 0xffff>;
 			opp-hz = <0x00 0x76bb8200>;
-			opp-microvolt = <0xe7ef0 0xe7ef0 0x118c30>;
+			opp-microvolt = <0xe7ef0 0xe7ef0 0x112a88>;
+			clock-latency-ns = <0x9c40>;
+		};
+
+		opp-2160000000 {
+			opp-supported-hw = <0xf9 0xffff>;
+			opp-hz = <0x00 0x80befc00>;
+			opp-microvolt = <0x124f80 0x124f80 0x124f80>;
 			clock-latency-ns = <0x9c40>;
 		};
 	};
@@ -641,49 +648,59 @@
 		opp-200000000 {
 			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0xbebc200>;
-			opp-microvolt = <0xcf850 0xcf850 0xf4240>;
+			opp-microvolt = <0xc96a8 0xc96a8 0xee098>;
 		};
 
 		opp-300000000 {
 			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x11e1a300>;
-			opp-microvolt = <0xcf850 0xcf850 0xf4240>;
+			opp-microvolt = <0xc96a8 0xc96a8 0xee098>;
 		};
 
 		opp-400000000 {
 			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x17d78400>;
-			opp-microvolt = <0xcf850 0xcf850 0xf4240>;
+			opp-microvolt = <0xc96a8 0xc96a8 0xee098>;
 		};
 
 		opp-600000000 {
 			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x23c34600>;
-			opp-microvolt = <0xdbba0 0xdbba0 0xf4240>;
-			opp-microvolt-L0 = <0xdbba0 0xdbba0 0xf4240>;
-			opp-microvolt-L1 = <0xd59f8 0xd59f8 0xf4240>;
-			opp-microvolt-L2 = <0xcf850 0xcf850 0xf4240>;
-			opp-microvolt-L3 = <0xcf850 0xcf850 0xf4240>;
+			opp-microvolt = <0xd59f8 0xd59f8 0xee098>;
+			opp-microvolt-L0 = <0xd59f8 0xd59f8 0xee098>;
+			opp-microvolt-L1 = <0xcf850 0xcf850 0xee098>;
+			opp-microvolt-L2 = <0xc96a8 0xc96a8 0xee098>;
+			opp-microvolt-L3 = <0xc96a8 0xc96a8 0xee098>;
 		};
 
 		opp-700000000 {
 			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x29b92700>;
-			opp-microvolt = <0xe7ef0 0xe7ef0 0xf4240>;
-			opp-microvolt-L0 = <0xe7ef0 0xe7ef0 0xf4240>;
-			opp-microvolt-L1 = <0xe1d48 0xe1d48 0xf4240>;
-			opp-microvolt-L2 = <0xdbba0 0xdbba0 0xf4240>;
-			opp-microvolt-L3 = <0xd59f8 0xd59f8 0xf4240>;
+			opp-microvolt = <0xe1d48 0xe1d48 0xee098>;
+			opp-microvolt-L0 = <0xe1d48 0xe1d48 0xee098>;
+			opp-microvolt-L1 = <0xdbba0 0xdbba0 0xee098>;
+			opp-microvolt-L2 = <0xd59f8 0xd59f8 0xee098>;
+			opp-microvolt-L3 = <0xcf850 0xcf850 0xee098>;
 		};
 
 		opp-800000000 {
 			opp-supported-hw = <0xf9 0xffff>;
 			opp-hz = <0x00 0x2faf0800>;
-			opp-microvolt = <0xf4240 0xf4240 0xf4240>;
-			opp-microvolt-L0 = <0xf4240 0xf4240 0xf4240>;
-			opp-microvolt-L1 = <0xee098 0xee098 0xf4240>;
-			opp-microvolt-L2 = <0xe7ef0 0xe7ef0 0xf4240>;
-			opp-microvolt-L3 = <0xe1d48 0xe1d48 0xf4240>;
+			opp-microvolt = <0xee098 0xee098 0x106738>;
+			opp-microvolt-L0 = <0xee098 0xee098 0x106738>;
+			opp-microvolt-L1 = <0xe7ef0 0xe7ef0 0x106738>;
+			opp-microvolt-L2 = <0xe1d48 0xe1d48 0x106738>;
+			opp-microvolt-L3 = <0xdbba0 0xdbba0 0x106738>;
+		};
+
+		opp-900000000 {
+			opp-supported-hw = <0xf9 0xffff>;
+			opp-hz = <0x00 0x35a4e900>;
+			opp-microvolt = <0x100590 0x100590 0x100590>;
+			opp-microvolt-L0 = <0x100590 0x100590 0x100590>;
+			opp-microvolt-L1 = <0xf4240 0xf4240 0x100590>;
+			opp-microvolt-L2 = <0xee098 0xee098 0x100590>;
+			opp-microvolt-L3 = <0xe7ef0 0xe7ef0 0x100590>;
 		};
 
 		opp-j-600000000 {
@@ -1901,11 +1918,11 @@
 		opp-900000000 {
 			opp-supported-hw = <0xf9 0xffff>;
 			opp-hz = <0x00 0x35a4e900>;
-			opp-microvolt = <0xee098 0xee098 0xf4240>;
-			opp-microvolt-L0 = <0xee098 0xee098 0xf4240>;
-			opp-microvolt-L1 = <0xe7ef0 0xe7ef0 0xf4240>;
-			opp-microvolt-L2 = <0xe1d48 0xe1d48 0xf4240>;
-			opp-microvolt-L3 = <0xdbba0 0xdbba0 0xf4240>;
+			opp-microvolt = <0xe7ef0 0xe7ef0 0xee098>;
+			opp-microvolt-L0 = <0xe7ef0 0xe7ef0 0xee098>;
+			opp-microvolt-L1 = <0xe1d48 0xe1d48 0xee098>;
+			opp-microvolt-L2 = <0xdbba0 0xdbba0 0xee098>;
+			opp-microvolt-L3 = <0xd59f8 0xd59f8 0xee098>;
 		};
 
 		opp-1000000000 {
@@ -2794,15 +2811,15 @@
 				native-mode = <0x9d>;
 
 				timing0 {
-					clock-frequency = <0x29020c0>;
+					clock-frequency = <0x28e9a20>;
 					hactive = <0x280>;
 					vactive = <0x1e0>;
 					hsync-len = <0xdc>;
 					hback-porch = <0x104>;
-					hfront-porch = <0x11e>;
+					hfront-porch = <0x136>;
 					vsync-len = <0x02>;
 					vback-porch = <0x10>;
-					vfront-porch = <0x0d>;
+					vfront-porch = <0x02>;
 					hsync-active = <0x00>;
 					vsync-active = <0x00>;
 					de-active = <0x00>;
@@ -2910,15 +2927,15 @@
 				phandle = <0x19c>;
 
 				timing {
-					clock-frequency = <0x29020c0>;
+					clock-frequency = <0x28e9a20>;
 					hactive = <0x280>;
 					vactive = <0x1e0>;
 					hsync-len = <0xdc>;
 					hback-porch = <0x104>;
-					hfront-porch = <0x11e>;
+					hfront-porch = <0x136>;
 					vsync-len = <0x02>;
 					vback-porch = <0x10>;
-					vfront-porch = <0x0d>;
+					vfront-porch = <0x02>;
 					hsync-active = <0x00>;
 					vsync-active = <0x00>;
 					de-active = <0x00>;
@@ -4402,11 +4419,26 @@
 
 			trips {
 
+				gpu-threshold {
+					temperature = <0x14c08>;
+					hysteresis = <0x7d0>;
+					type = "passive";
+					phandle = <0x331>;
+				};
+
 				gpu-crit {
 					temperature = <0x1c138>;
 					hysteresis = <0x7d0>;
 					type = "critical";
 					phandle = <0x1e2>;
+				};
+			};
+
+			cooling-maps {
+
+				map0 {
+					trip = <0x331>;
+					cooling-device = <0x105 0xffffffff 0xffffffff>;
 				};
 			};
 		};
@@ -7450,7 +7482,7 @@
 	};
 
 	chosen {
-		bootargs = "earlycon=uart8250,mmio32,0xfe660000 console=ttyFIQ0";
+		bootargs = [00];
 		phandle = <0x324>;
 	};
 
@@ -7541,7 +7573,7 @@
 		led@6 {
 			gpios = <0x44 0x03 0x00>;
 			label = "backlight_1_power";
-			default-state = "off";
+			default-state = "on";
 			phandle = <0x32c>;
 		};
 	};
