@@ -162,6 +162,19 @@ of_get_gpio_regulator_config(struct device *dev, struct device_node *np,
 
 	/* Fetch GPIO init levels */
 	ngpios = gpiod_count(dev, NULL);
+	/*
+	 * A regulator-gpio node may carry only an "enable" GPIO and no
+	 * state-selection "gpios" (e.g. the RG DS vcc-sd: a fixed 3.3V rail
+	 * switched by its enable-gpio, with two identical 3.3V states).  In that
+	 * case gpiod_count() returns a negative errno (-ENOENT); leaving
+	 * config->ngpios negative makes the devm_kcalloc(config->ngpios, ...) in
+	 * gpio_regulator_probe() overflow to a huge size and fail with -ENOMEM,
+	 * which in turn wedges the microSD controller (fe2b0000.dwmmc) in
+	 * deferred probe ("supplier vcc-sd not ready").  Treat "no state GPIOs"
+	 * as zero so the enable-only path registers cleanly.
+	 */
+	if (ngpios < 0)
+		ngpios = 0;
 	if (ngpios > 0) {
 		config->gflags = devm_kzalloc(dev,
 					      sizeof(enum gpiod_flags)

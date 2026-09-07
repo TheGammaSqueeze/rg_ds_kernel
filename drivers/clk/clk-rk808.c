@@ -200,12 +200,23 @@ static int rk808_clkout_probe(struct platform_device *pdev)
 					   rk808_clkout);
 }
 
+/*
+ * These must match the clkout MFD cell names registered by drivers/mfd/rk808.c
+ * (rk805-clkout, rk808-clkout, rk816-clkout, rk817-clkout, rk818-clkout).  The
+ * 6.1.172 MFD renamed the cells to the chip-specific "-clkout" form, but this
+ * id_table still carried the old generic "-clk" names.  Because the driver
+ * defines an id_table, the platform bus matches ONLY via exact strcmp against
+ * these entries (platform_match_id) and never falls back to .driver.name, so
+ * the PMIC 32.768kHz clkout never bound (rk817-clkout drv=NONE) and the
+ * Bluetooth LPO clock consumer failed with "clk_get failed".  Match the cell
+ * names so the clkout binds again, as on the stock 6.1.141 kernel.
+ */
 static const struct platform_device_id rk8xx_clk_id_table[] = {
-	{ "rk805-clk", 0 },
-	{ "rk809-clk", 0 },
-	{ "rk816-clk", 0 },
-	{ "rk817-clk", 0 },
-	{ "rk818-clk", 0 },
+	{ "rk805-clkout", 0 },
+	{ "rk808-clkout", 0 },
+	{ "rk816-clkout", 0 },
+	{ "rk817-clkout", 0 },
+	{ "rk818-clkout", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(platform, rk8xx_clk_id_table);
