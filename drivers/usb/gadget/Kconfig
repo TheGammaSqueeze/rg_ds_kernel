@@ -207,6 +207,12 @@ config USB_F_UVC
 config USB_F_MIDI
 	tristate
 
+config USB_F_ACC
+	tristate
+
+config USB_F_AUDIO_SRC
+	tristate
+
 config USB_F_HID
 	tristate
 
@@ -442,6 +448,23 @@ config USB_CONFIGFS_F_MIDI
 	  a sound "card" in the ALSA sound system. Other MIDI
 	  connections can then be made on the gadget system, using
 	  ALSA's aconnect utility etc.
+
+config USB_CONFIGFS_F_ACC
+	bool "Accessory gadget"
+	depends on USB_CONFIGFS
+	depends on HID=y
+	select USB_F_ACC
+	help
+	  USB gadget Accessory support
+
+config USB_CONFIGFS_F_AUDIO_SRC
+	bool "Audio Source gadget"
+	depends on USB_CONFIGFS
+	depends on SND
+	select SND_PCM
+	select USB_F_AUDIO_SRC
+	help
+	  USB gadget Audio Source support
 
 config USB_CONFIGFS_F_HID
 	bool "HID function"
