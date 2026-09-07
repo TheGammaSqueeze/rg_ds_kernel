@@ -2719,11 +2719,40 @@ int get_led_chargr_status(void)
 }
 EXPORT_SYMBOL(get_led_chargr_status);
 
+/*
+ * Stock parity: the RG DS ships an external cw2015 voltage-based fuel gauge and
+ * the stock kernel reports ITS state-of-charge as the system battery capacity
+ * (the "Sys soc = cw2015 soc" handoff), rather than the rk817 coulomb counter,
+ * which drifts without full/empty calibration.  Read the cw2015-battery power
+ * supply's capacity here; return < 0 (and fall back to the rk817 dsoc) whenever
+ * the gauge is not yet registered or not readable.  The cw2015 driver is
+ * built-in, so caching its power_supply reference is safe (never unloaded).
+ */
+static int rk817_bat_cw2015_soc(void)
+{
+	static struct power_supply *cw_psy;
+	union power_supply_propval pv;
+
+	if (!cw_psy)
+		cw_psy = power_supply_get_by_name("cw2015-battery");
+	if (!cw_psy)
+		return -1;
+
+	if (power_supply_get_property(cw_psy, POWER_SUPPLY_PROP_CAPACITY, &pv))
+		return -1;
+
+	if (pv.intval < 0 || pv.intval > 100)
+		return -1;
+
+	return pv.intval;
+}
+
 static int rk817_battery_get_property(struct power_supply *psy,
 				      enum power_supply_property psp,
 				      union power_supply_propval *val)
 {
 	struct rk817_battery_device *battery = power_supply_get_drvdata(psy);
+	int cw_soc;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
@@ -2738,6 +2767,10 @@ static int rk817_battery_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		val->intval = (battery->dsoc + 400) / 1000;
+		/* Prefer the cw2015 voltage-gauge SOC, matching the stock kernel. */
+		cw_soc = rk817_bat_cw2015_soc();
+		if (cw_soc >= 0)
+			val->intval = cw_soc;
 		if (battery->pdata->bat_mode == MODE_VIRTUAL)
 			val->intval = VIRTUAL_SOC;
 		led_update_soc(val->intval);
