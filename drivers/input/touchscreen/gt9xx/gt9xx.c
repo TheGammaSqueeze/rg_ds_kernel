@@ -446,6 +446,13 @@ static void gtp_touch_down(struct goodix_ts_data* ts,s32 id,s32 x,s32 y,s32 w)
 			y = ts->abs_y_max - y;
 	}
 
+	/* RG DS: the gt9xx-1 (top) panel is mounted 180 rotated vs gt9xx-0, so
+	 * reverse both axes for it (the orientation flags above are global). */
+	if (ts->flip_180) {
+		x = ts->abs_x_max - x;
+		y = ts->abs_y_max - y;
+	}
+
 #if GTP_ICS_SLOT_REPORT
     input_mt_slot(ts->input_dev, id);
     input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, id);
@@ -2154,6 +2161,11 @@ static s8 gtp_request_input_dev(struct i2c_client *client,
         ts->input_dev->name = client->dev.of_node->name;
     else
         ts->input_dev->name = goodix_ts_name;
+    /* RG DS: the top panel (gt9xx-1) GT911 is mounted 180 rotated relative to
+     * the bottom (gt9xx-0); reverse both axes for it (see gtp_touch_down). */
+    if (client->dev.of_node && client->dev.of_node->name &&
+        !strcmp(client->dev.of_node->name, "gt9xx-1"))
+        ts->flip_180 = true;
     ts->input_dev->phys = phys;
     ts->input_dev->id.bustype = BUS_I2C;
     ts->input_dev->id.vendor = 0xDEAD;

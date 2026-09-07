@@ -109,6 +109,11 @@ struct goodix_ts_data {
     s32 use_irq;
     u16 abs_x_max;
     u16 abs_y_max;
+    /* RG DS: rotate this panel's reported coords 180 (reverse X and Y).
+     * Set for the gt9xx-1 (top) panel whose GT911 is mounted upside down
+     * relative to gt9xx-0; the orientation flags are global so this is the
+     * per-panel correction. */
+    bool flip_180;
     u8  max_touch_num;
     u8  int_trigger_type;
     u8  green_wake_mode;
