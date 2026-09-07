@@ -147,21 +147,60 @@ build_variant() {          # <name> <dtb-path>
     --second_offset "$SOFF" --tags_offset "$TOFF" --dtb_offset "$DOFF" --board '' \
     --cmdline "$CMDLINE" -o "$OUT/boot_$name.img"
 
-  # validate: header id must be non-zero and the RSCE must round-trip to the same dtb
+  # Fix up the boot-header id, then validate.
+  #
+  # Rockchip u-boot (CONFIG_ANDROID_BOOT_IMAGE_HASH) recomputes the boot-header
+  # SHA1 id over the payloads and refuses to boot if it does not match hdr->id:
+  #   id = SHA1( kernel|kernel_size | ramdisk|ramdisk_size | second|second_size
+  #              | recovery_dtbo|recovery_dtbo_size (hdr v>0)
+  #              | dtb|dtb_size (hdr v>1) )
+  # where an absent section contributes only its 4-byte little-endian size (0).
+  # mkbootimg computes hdr->id differently, so its images are rejected by an
+  # AVB-enforcing u-boot. Recompute the id the u-boot way and patch it in (this
+  # is exactly what android_boot_image_editor's hashFileAndSize does), so the
+  # image boots on a stock/AVB-on u-boot as well as our AVB-disabled one.
   python3 - "$OUT/boot_$name.img" "$dtb" "$UNPACK" "$RESTOOL" "$vdir" <<'PY'
-import sys, subprocess, os, filecmp
+import sys, subprocess, os, struct, hashlib, filecmp
 img, dtb, unpack, restool, vdir = sys.argv[1:6]
-d = open(img, 'rb').read()
-assert any(d[576:596]), "boot header id is all-zero (mkbootimg did not hash the payloads)"
+
 chk = os.path.join(vdir, "check")
 subprocess.run([sys.executable, unpack, "--boot_img", img, "--out", chk],
                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def sec(name):
+    p = os.path.join(chk, name)
+    return p if os.path.exists(p) and os.path.getsize(p) > 0 else None
+
+# order per u-boot / android boot image v2: kernel, ramdisk, second, recovery_dtbo, dtb
+hv = struct.unpack('<I', open(img, 'rb').read()[40:44])[0]
+items = [sec('kernel'), sec('ramdisk'), sec('second')]
+if hv > 0:
+    items.append(sec('recovery_dtbo'))   # absent on this boot image -> size 0
+if hv > 1:
+    items.append(sec('dtb'))
+md = hashlib.sha1()
+for it in items:
+    if it is None:
+        md.update(struct.pack('<I', 0))
+    else:
+        data = open(it, 'rb').read()
+        md.update(data); md.update(struct.pack('<I', len(data)))
+new_id = md.digest()
+
+# patch hdr->id (offset 576, 20 bytes; the 8*u32 id field, remaining bytes zero)
+buf = bytearray(open(img, 'rb').read())
+buf[576:576+20] = new_id
+buf[576+20:576+32] = b'\x00' * 12
+open(img, 'wb').write(buf)
+
+# validate: id present + consistent, and RSCE round-trips to the source dtb
+assert any(new_id), "recomputed boot id is all-zero"
 rc = os.path.join(chk, "rsce"); os.makedirs(rc, exist_ok=True)
 subprocess.run([restool, "--unpack", "--image=" + os.path.join(chk, "second")],
                cwd=rc, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 got = os.path.join(rc, "out", "rk-kernel.dtb")
 assert filecmp.cmp(got, dtb, shallow=False), "packed RSCE rk-kernel.dtb != source dtb"
-print("   validated: header id present, RSCE rk-kernel.dtb == source dtb")
+print("   validated: boot id patched (%s...), RSCE rk-kernel.dtb == source dtb" % new_id.hex()[:10])
 PY
   log "out/boot_$name.img  ($(stat -c%s "$OUT/boot_$name.img") bytes)"
 }
