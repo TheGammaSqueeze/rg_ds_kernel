@@ -18,12 +18,15 @@
 // are the exact set the stock RG DS kernel leaves the live chip in.
 //
 
+#include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <sound/soc.h>
+#include <sound/aw87391.h>
 
 struct aw87391_regval {
 	u8 reg;
@@ -37,6 +40,14 @@ struct aw87391_priv {
 	bool initialized;
 	bool powered;
 };
+
+/*
+ * The two PAs are plain i2c devices on the stock DTB (not ASoC aux-devs), so the
+ * RK817 codec reaches them by side through this registry and drives them from its
+ * mute_stream callback, exactly as the stock kernel does.
+ */
+static struct aw87391_priv *aw87391_pa_left;
+static struct aw87391_priv *aw87391_pa_right;
 
 /*
  * Gain / config captured from the stock RG DS kernel's live PA state
@@ -90,34 +101,42 @@ static int aw87391_apply_seq(struct aw87391_priv *aw,
 	return 0;
 }
 
-static int aw87391_enable(struct aw87391_priv *aw)
+static int aw87391_pa_enable(struct aw87391_priv *aw)
 {
 	int ret;
 
-	if (aw->powered)
-		return 0;
+	if (!aw)
+		return -ENODEV;
 
-	if (aw->vcc) {
-		ret = regulator_enable(aw->vcc);
-		if (ret)
-			return ret;
+	if (!aw->powered) {
+		if (aw->vcc) {
+			ret = regulator_enable(aw->vcc);
+			if (ret)
+				return ret;
+		}
+
+		if (aw->enable_gpiod)
+			gpiod_set_value_cansleep(aw->enable_gpiod, 1);
+
+		if (aw->vcc || aw->enable_gpiod)
+			usleep_range(1000, 2000);
 	}
-
-	if (aw->enable_gpiod)
-		gpiod_set_value_cansleep(aw->enable_gpiod, 1);
-
-	if (aw->vcc || aw->enable_gpiod)
-		usleep_range(1000, 2000);
 
 	/*
 	 * Write the full stock speaker-on profile (config + staged anti-pop
-	 * enable) on every power-up, exactly as stock does.  Writing it each time
-	 * from the off state is what avoids the enable pop.
+	 * enable) on every stream start, exactly as stock's enable_pa_spk_*.
 	 */
 	ret = aw87391_apply_seq(aw, aw87391_on_reg,
 				ARRAY_SIZE(aw87391_on_reg));
 	if (ret)
 		goto err_power;
+
+	/*
+	 * Stock enable_pa_spk_* waits 50 ms (50 x udelay(1000)) after writing the
+	 * kspk profile so the boost/PA settle before audio reaches it.  This runs
+	 * from the codec mute_stream callback (sleepable process context).
+	 */
+	msleep(50);
 
 	aw->initialized = true;
 
@@ -139,11 +158,11 @@ err_power:
 	return ret;
 }
 
-static int aw87391_disable(struct aw87391_priv *aw)
+static int aw87391_pa_disable(struct aw87391_priv *aw)
 {
 	int ret;
 
-	if (!aw->powered)
+	if (!aw || !aw->powered)
 		return 0;
 
 	/* Best-effort: still drop power even if the OFF write fails, so the
@@ -167,29 +186,43 @@ static int aw87391_disable(struct aw87391_priv *aw)
 	return ret;
 }
 
+/*
+ * Entry points for the RK817 codec's mute_stream callback: enable the speaker
+ * PAs LAST on the speaker unmute (after the DAC is unmuted and the spk gpio is
+ * raised) and disable them FIRST on mute -- the stock rk817_digital_mute
+ * ordering, which (together with the 50 ms settle) is what avoids the pop.
+ * Stock does right then left; order is immaterial (two independent i2c devices).
+ */
+void aw87391_speakers_enable(void)
+{
+	aw87391_pa_enable(aw87391_pa_right);
+	aw87391_pa_enable(aw87391_pa_left);
+}
+EXPORT_SYMBOL_GPL(aw87391_speakers_enable);
+
+void aw87391_speakers_disable(void)
+{
+	aw87391_pa_disable(aw87391_pa_right);
+	aw87391_pa_disable(aw87391_pa_left);
+}
+EXPORT_SYMBOL_GPL(aw87391_speakers_disable);
+
 static int aw87391_suspend(struct device *dev)
 {
 	struct aw87391_priv *aw = dev_get_drvdata(dev);
 
-	if (!aw)
-		return 0;
-
-	return aw87391_disable(aw);
+	aw87391_pa_disable(aw);
+	return 0;
 }
 
 static int aw87391_resume(struct device *dev)
 {
-	struct aw87391_priv *aw = dev_get_drvdata(dev);
-
-	if (!aw)
-		return 0;
-
 	/*
-	 * The stock DTB does not wire the PA into the ASoC card, so there is no
-	 * DAPM event to bring it back after resume; re-power it here to match
-	 * the probe-time behaviour.
+	 * Deliberately do NOT re-enable here.  Stock re-arms the PA from
+	 * rk817_digital_mute on the next stream, never from PM resume; enabling
+	 * into an idle/unsettled DAC on resume is exactly the resume pop.
 	 */
-	return aw87391_enable(aw);
+	return 0;
 }
 
 static void aw87391_shutdown(struct i2c_client *i2c)
@@ -199,7 +232,7 @@ static void aw87391_shutdown(struct i2c_client *i2c)
 	if (!aw)
 		return;
 
-	aw87391_disable(aw);
+	aw87391_pa_disable(aw);
 }
 
 static SIMPLE_DEV_PM_OPS(aw87391_pm_ops, aw87391_suspend, aw87391_resume);
@@ -212,9 +245,10 @@ static int aw87391_drv_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		return aw87391_enable(aw);
+		return aw87391_pa_enable(aw);
 	case SND_SOC_DAPM_POST_PMD:
-		return aw87391_disable(aw);
+		aw87391_pa_disable(aw);
+		return 0;
 	default:
 		return 0;
 	}
@@ -278,16 +312,19 @@ static int aw87391_i2c_probe(struct i2c_client *i2c)
 		return ret;
 
 	/*
-	 * Stock Anbernic DTB does not list the PA as an ASoC aux-dev, so no
-	 * DAPM PRE_PMU event will ever reach us; power the amp up now so the
-	 * speakers work against the unmodified stock device tree, matching the
-	 * stock kernel.  (When wired via DAPM, aw->powered guards double-work.)
+	 * Do NOT power the amp up at probe: the RK817 DAC is still idle this early
+	 * (cold boot), and enabling into an unsettled DAC is the classic cold-start
+	 * pop.  Instead register into the side registry so the RK817 codec can arm
+	 * the PA from its mute_stream callback on the next stream start (after the
+	 * DAC is unmuted), exactly as the stock kernel does.
 	 */
-	ret = aw87391_enable(aw);
-	if (ret)
-		dev_warn(&i2c->dev, "failed to power up PA at probe: %d\n", ret);
+	if (of_device_is_compatible(i2c->dev.of_node, "aw,aw87391-right"))
+		aw87391_pa_right = aw;
 	else
-		dev_info(&i2c->dev, "AW87391 speaker PA enabled\n");
+		aw87391_pa_left = aw;	/* "aw,aw87391-left" and the generic id */
+
+	dev_info(&i2c->dev, "AW87391 speaker PA registered (%s)\n",
+		 aw87391_pa_right == aw ? "right" : "left");
 
 	return 0;
 }

@@ -18,6 +18,7 @@
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/tlv.h>
+#include <sound/aw87391.h>
 #include "rk817_codec.h"
 
 #ifdef CONFIG_SND_DEBUG
@@ -1196,6 +1197,9 @@ static int rk817_digital_mute_dac(struct snd_soc_dai *dai, int mute, int stream)
 
 	if (mute) {
 		rk817_codec_ctl_gpio(rk817, CODEC_SET_SPK, 0);
+		/* Stock: SPK gpio low, THEN the external PAs off, before the DAC
+		 * is torn down (disable_pa_spk_* precedes the DAC mute). */
+		aw87391_speakers_disable();
 		rk817_codec_ctl_gpio(rk817, CODEC_SET_HP, 0);
 
 		snd_soc_component_update_bits(component,
@@ -1229,6 +1233,9 @@ static int rk817_digital_mute_dac(struct snd_soc_dai *dai, int mute, int stream)
 			}
 			rk817_codec_ctl_gpio(rk817, CODEC_SET_SPK, 1);
 			rk817_codec_ctl_gpio(rk817, CODEC_SET_HP, 0);
+			/* Stock: enable the external PAs LAST, after the DAC is
+			 * unmuted and the spk gpio is raised (avoids the pop). */
+			aw87391_speakers_enable();
 			break;
 		case HP_PATH:
 		case HP_NO_MIC:
@@ -1238,6 +1245,9 @@ static int rk817_digital_mute_dac(struct snd_soc_dai *dai, int mute, int stream)
 					PWD_DACBIAS_ON | PWD_DACD_DOWN |
 					PWD_DACL_ON | PWD_DACR_ON);
 			rk817_codec_ctl_gpio(rk817, CODEC_SET_SPK, 0);
+			/* HP-only path: stock disables the speaker PAs here so a
+			 * speaker->headphone switch mid-stream turns them off. */
+			aw87391_speakers_disable();
 			rk817_codec_ctl_gpio(rk817, CODEC_SET_HP, 1);
 			break;
 		case SPK_HP:
@@ -1247,6 +1257,8 @@ static int rk817_digital_mute_dac(struct snd_soc_dai *dai, int mute, int stream)
 					PWD_DACL_ON | PWD_DACR_ON);
 			rk817_codec_ctl_gpio(rk817, CODEC_SET_SPK, 1);
 			rk817_codec_ctl_gpio(rk817, CODEC_SET_HP, 1);
+			/* Enable the external PAs LAST, as in the SPK path. */
+			aw87391_speakers_enable();
 			break;
 		default:
 			break;
