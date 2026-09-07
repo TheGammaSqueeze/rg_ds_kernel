@@ -377,7 +377,15 @@ static int __add_cma_heap(struct cma *cma, void *data)
 		return -ENOMEM;
 	cma_heap->cma = cma;
 
-	exp_info.name = cma_get_name(cma);
+	/*
+	 * Allow the caller to override the heap name.  The default CMA area is
+	 * registered as "cma" (below) so /dev/dma_heap/cma matches what the
+	 * GammaOS userspace / ueventd (0444 system:system) and Rockchip MPP
+	 * allocators expect, exactly as the stock 6.1.141 kernel did; without
+	 * this the upstream heap takes the DT node name ("linux,cma"), stays
+	 * root:root 0600, and name-based heap opens fail.
+	 */
+	exp_info.name = data ? (const char *)data : cma_get_name(cma);
 	exp_info.ops = &cma_heap_ops;
 	exp_info.priv = cma_heap;
 
@@ -398,7 +406,7 @@ static int add_default_cma_heap(void)
 	int ret = 0;
 
 	if (default_cma)
-		ret = __add_cma_heap(default_cma, NULL);
+		ret = __add_cma_heap(default_cma, "cma");
 
 	return ret;
 }
