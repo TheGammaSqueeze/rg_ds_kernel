@@ -59,6 +59,8 @@ modules.order
 #
 /*.img
 /out/
+# RG DS from-source boot-image build input (user-supplied stock ramdisk/logo source)
+/rgds/*.img
 /linux
 /modules-only.symvers
 /vmlinux
