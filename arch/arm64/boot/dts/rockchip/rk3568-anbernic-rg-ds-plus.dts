@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Anbernic RG DS Plus (RK3568) - GammaOS Android device tree.
+ *
+ * Built on Anbernic's own "deep-lp3" device trees (device-proven hardware
+ * values: RK817 PMIC rails, 1024x768 2-lane ILI9806 dual DSI panels, gt9xx
+ * touch, AW883XX I2S speakers, SARADC + 74HC4052 joypad mux). Only the
+ * Android/boot-critical bits are overridden here; the hardware description is
+ * kept verbatim from Anbernic so the first boot matches their working config.
+ *
+ * The RG DS Plus has NO eMMC - it boots from microSD (sdmmc0). See the Android
+ * overrides at the bottom of this file.
+ */
+
+#include "rk3568-deep-lp3-rk817.dtsi"
+#include <dt-bindings/display/rockchip_vop.h>
+
+/ {
+	model = "Anbernic RG DS Plus";
+	compatible = "anbernic,rg-ds-plus", "rockchip,rk3568-deep-lp3-v10",
+		     "rockchip,rk3568";
+
+	/* CMA pool for the Android GPU / composer allocator (the deep-* files
+	 * omit one; place it dynamically so it cannot collide with the logo /
+	 * cubic-lut reserved regions from rk356x.dtsi). */
+	reserved-memory {
+		cma {
+			compatible = "shared-dma-pool";
+			reusable;
+			size = <0x0 0x2000000>;
+			linux,cma-default;
+		};
+	};
+};
+
+&vp0 {
+	cursor-win-id = <ROCKCHIP_VOP2_CLUSTER0>;
+};
+
+&vp1 {
+	cursor-win-id = <ROCKCHIP_VOP2_CLUSTER1>;
+};
+
+/*
+ * Android supplies the kernel command line and the root device from the boot
+ * image + ramdisk fstab, so drop Anbernic's Linux root=PARTUUID; keep only the
+ * early console so we get UART/logcat on first boot.
+ */
+&chosen {
+	bootargs = "earlycon=uart8250,mmio32,0xfe660000 console=ttyFIQ0";
+};
+
+/*
+ * SD-card boot, no eMMC. Disable the copy-paste sdhci node and re-alias the mmc
+ * controllers so the internal boot SD (sdmmc0) enumerates as mmcblk0, the
+ * removable TF (sdmmc1) as mmcblk1 and the SDIO WiFi (sdmmc2) as mmcblk2.
+ */
+&sdhci {
+	status = "disabled";
+};
+
+/ {
+	aliases {
+		mmc0 = &sdmmc0;
+		mmc1 = &sdmmc1;
+		mmc2 = &sdmmc2;
+	};
+};
