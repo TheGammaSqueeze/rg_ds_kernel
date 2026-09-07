@@ -66,3 +66,244 @@
 		mmc2 = &sdmmc2;
 	};
 };
+
+/* ======================================================================
+ * Anbernic RG DS Plus - Android device-tree overrides (GammaOS 6.1.172).
+ * Paste at the END of arch/arm64/boot/dts/rockchip/rk3568-anbernic-rg-ds-plus.dts.
+ *
+ * VALIDATED: this exact block was appended to the real top file, preprocessed
+ * (aarch64-linux-gnu-cpp with the kernel include paths) and compiled with the
+ * kernel dtc -> dtb exit 0.  Re-decompile confirms: singleadc-joypad present,
+ * anbernic,misc + gpio-keys-polled + uboot-gpio-leds gone, gpio-leds +
+ * pwm-vibrator + optee + ram-vendor-storage present, android-charge-on = 1.
+ *
+ * The Plus top file includes rk3568-deep-lp3-rk817.dtsi -> rk3568.dtsi +
+ * rk3568-linux.dtsi + rk3568-deep-rg_ds-2mipi.dtsi.  Three Anbernic vendor
+ * nodes have NO in-tree driver and are replaced here with standard bindings:
+ *   - gpio-keys-polled  -> singleadc-joypad (analog sticks + all buttons)
+ *   - anbernic,misc     -> gpio-leds + gpio-keys (hall lid) + pwm-vibrator
+ *   - uboot-gpio-leds   -> rebind &leds to mainline "gpio-leds"
+ * All macros (EV_*, BTN_*, KEY_*, ABS_*, SW_LID, GPIO_ACTIVE_*) already come
+ * from the base dtsi includes (dt-bindings/input/rk-input.h at base line 11,
+ * dt-bindings/gpio/gpio.h at base line 9); NO extra #include is needed.
+ * ====================================================================== */
+
+/* -------- 1. Remove the two driverless, label-less vendor nodes -------- */
+/ {
+	/* vendor combined key/analog node (base dtsi line 77): analog/amux lines
+	 * are commented out and it needs CONFIG_KEYBOARD_GPIO_POLLED (not set).
+	 * Its button GPIOs are re-homed into singleadc-joypad, so delete it to
+	 * avoid double-claiming &btn_pins and double-reporting keys. */
+	/delete-node/ gpio-keys-polled;
+
+	/* vendor "anbernic,misc" composite (base dtsi line 266): no in-tree
+	 * driver.  LEDs/hall/motor are re-expressed as standard nodes below. */
+	/delete-node/ anbernic_misc;
+};
+
+/* -------- 2. Analog joypad + all digital buttons (singleadc-joypad) ----
+ * Driver: drivers/input/joystick/singleadcjoy.c (CONFIG_JOYSTICK_SINGLEADCJOY,
+ * of_match "singleadc-joypad").  amux (74HC4052) wiring from the Plus vendor
+ * node's own commented lines (base dtsi 87/93/94/95): saradc ch3,
+ * A1=gpio3 RK_PC2, A0=gpio3 RK_PC3, EN=gpio3 RK_PC1.  The driver drives the
+ * mux lines with gpio_set_value() (LOGICAL - honours the DT flag; see
+ * joypad_amux_select() singleadcjoy.c:273-297), so the flags MUST match the
+ * device-proven RG DS reference (rk3566-anbernic-rg-ds.dts 7613-7615: all three
+ * ACTIVE_LOW) or the mux selects the wrong ADC channel.  DO NOT copy the vendor
+ * comment's ACTIVE_HIGH for A1/A0.
+ * Button pins are the Plus device-proven pins (base dtsi 116-224); pin->code is
+ * identical between the Plus vendor node and the RG DS reference (7631-7745),
+ * except the Plus vendor placed a placeholder 0x132 on the Y pin (PB0) which we
+ * correct to BTN_WEST.  amux-count=4: the Plus has DIGITAL L2/R2 (gpio3 PA4/PA6
+ * GPIO buttons), so there are NO analog triggers - 2 sticks / 4 channels only
+ * (matches vendor comment "amux-count=4"; the RG DS used 6 for ADC triggers).
+ * NOTE: EVERY child of this node is parsed by the driver as a button GPIO
+ * (device_get_child_node_count + linux,code required), so no non-button child
+ * may be added here. */
+/ {
+	singleadc-joypad {
+		compatible = "singleadc-joypad";
+		joypad-name = "retrogame_joypad";
+		joypad-product = <0x1101>;
+		joypad-revision = <0x0100>;
+		status = "okay";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&btn_pins>;
+
+		io-channel-names = "amux_adc";
+		io-channels = <&saradc 3>;
+		amux-count = <4>;
+		amux-a-gpios  = <&gpio3 RK_PC2 GPIO_ACTIVE_LOW>;
+		amux-b-gpios  = <&gpio3 RK_PC3 GPIO_ACTIVE_LOW>;
+		amux-en-gpios = <&gpio3 RK_PC1 GPIO_ACTIVE_LOW>;
+
+		/* Identity seeds; sticks are tuned via sysfs then baked in.
+		 * Real spans/deadzone/tuning need on-device measurement. */
+		button-adc-scale    = <1>;
+		button-adc-deadzone = <64>;
+		button-adc-fuzz     = <32>;
+		button-adc-flat     = <32>;
+		abs_x-p-tuning  = <180>;
+		abs_x-n-tuning  = <180>;
+		abs_y-p-tuning  = <180>;
+		abs_y-n-tuning  = <180>;
+		abs_rx-p-tuning = <180>;
+		abs_rx-n-tuning = <180>;
+		abs_ry-p-tuning = <180>;
+		abs_ry-n-tuning = <180>;
+		poll-interval = <10>;
+
+		/* D-pad reported as HAT (EV_ABS) */
+		sw1  { gpios = <&gpio2 RK_PD4 GPIO_ACTIVE_LOW>; label = "GPIO DPAD-UP";
+		       linux,input-type = <EV_ABS>; linux,code = <ABS_HAT0Y>; linux,abs-value = <2>; };
+		sw2  { gpios = <&gpio2 RK_PD5 GPIO_ACTIVE_LOW>; label = "GPIO DPAD-DOWN";
+		       linux,input-type = <EV_ABS>; linux,code = <ABS_HAT0Y>; linux,abs-value = <1>; };
+		sw3  { gpios = <&gpio2 RK_PD7 GPIO_ACTIVE_LOW>; label = "GPIO DPAD-LEFT";
+		       linux,input-type = <EV_ABS>; linux,code = <ABS_HAT0X>; linux,abs-value = <2>; };
+		sw4  { gpios = <&gpio2 RK_PD6 GPIO_ACTIVE_LOW>; label = "GPIO DPAD-RIGHT";
+		       linux,input-type = <EV_ABS>; linux,code = <ABS_HAT0X>; linux,abs-value = <1>; };
+
+		/* Face buttons (pin->code proven identical on Plus + RG DS):
+		 *   PB7=SOUTH(A) PC0=EAST(B) PA7=NORTH(X) PB0=WEST(Y). */
+		sw5  { gpios = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>; label = "GPIO BTN-A"; linux,code = <BTN_SOUTH>; };
+		sw6  { gpios = <&gpio3 RK_PC0 GPIO_ACTIVE_LOW>; label = "GPIO BTN-B"; linux,code = <BTN_EAST>; };
+		sw7  { gpios = <&gpio3 RK_PA7 GPIO_ACTIVE_LOW>; label = "GPIO BTN-X"; linux,code = <BTN_NORTH>; };
+		sw8  { gpios = <&gpio3 RK_PB0 GPIO_ACTIVE_LOW>; label = "GPIO BTN-Y"; linux,code = <BTN_WEST>; };
+
+		/* Start/Select */
+		sw9  { gpios = <&gpio3 RK_PB2 GPIO_ACTIVE_LOW>; label = "GPIO BTN-SELECT"; linux,code = <BTN_SELECT>; };
+		sw10 { gpios = <&gpio3 RK_PB1 GPIO_ACTIVE_LOW>; label = "GPIO BTN-START";  linux,code = <BTN_START>;  };
+
+		/* Shoulders (Plus L2/R2 are digital GPIOs, not ADC) */
+		sw12 { gpios = <&gpio3 RK_PA3 GPIO_ACTIVE_LOW>; label = "GPIO BTN-TL";  linux,code = <BTN_TL>;  };
+		sw13 { gpios = <&gpio3 RK_PA5 GPIO_ACTIVE_LOW>; label = "GPIO BTN-TR";  linux,code = <BTN_TR>;  };
+		sw14 { gpios = <&gpio3 RK_PA4 GPIO_ACTIVE_LOW>; label = "GPIO BTN-TL2"; linux,code = <BTN_TL2>; };
+		sw15 { gpios = <&gpio3 RK_PA6 GPIO_ACTIVE_LOW>; label = "GPIO BTN-TR2"; linux,code = <BTN_TR2>; };
+
+		/* Stick clicks */
+		sw16 { gpios = <&gpio2 RK_PD3 GPIO_ACTIVE_LOW>; label = "GPIO BTN-THUMBR"; linux,code = <BTN_THUMBR>; };
+		sw17 { gpios = <&gpio2 RK_PD2 GPIO_ACTIVE_LOW>; label = "GPIO BTN-THUMBL"; linux,code = <BTN_THUMBL>; };
+
+		/* Menu -> BTN_MODE (guide) */
+		sw19 { gpios = <&gpio2 RK_PD1 GPIO_ACTIVE_LOW>; label = "GPIO BTN-MODE"; linux,code = <BTN_MODE>; };
+
+		/* Volume keys (Plus-only, wired as GPIO buttons on gpio3 PA1/PA2) */
+		sw20 { gpios = <&gpio3 RK_PA1 GPIO_ACTIVE_LOW>; label = "GPIO KEY-VOLUMEUP";   linux,code = <KEY_VOLUMEUP>;   };
+		sw21 { gpios = <&gpio3 RK_PA2 GPIO_ACTIVE_LOW>; label = "GPIO KEY-VOLUMEDOWN"; linux,code = <KEY_VOLUMEDOWN>; };
+	};
+};
+
+/* -------- 3. Battery/status LEDs (rebind &leds off "uboot-gpio-leds") ----
+ * The base "leds" node HAS a label (base dtsi 230), so override it in place:
+ * switch to mainline "gpio-leds", add the pinctrl and the three LED children.
+ * Keep the vendor label strings ("battery_full"/"battery_charging"/"low_power")
+ * that u-boot and the charge scripts read by name.  Pins from anbernic,misc
+ * (base 275-277): work=gpio0 PC4, charge=gpio0 PC5, lowpwr=gpio3 PB6; the
+ * leds_gpio pinctrl (base 1305-1310) already covers exactly those three pins. */
+&leds {
+	compatible = "gpio-leds";
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&leds_gpio>;
+
+	work-led {
+		gpios = <&gpio0 RK_PC4 GPIO_ACTIVE_HIGH>;
+		label = "battery_full";
+		default-state = "on";
+	};
+	charge-led {
+		gpios = <&gpio0 RK_PC5 GPIO_ACTIVE_HIGH>;
+		label = "battery_charging";
+		default-state = "off";
+	};
+	low-led {
+		gpios = <&gpio3 RK_PB6 GPIO_ACTIVE_HIGH>;
+		label = "low_power";
+		default-state = "off";
+	};
+};
+
+/* -------- 4. Hall lid switch as gpio-keys (SW_LID) --------
+ * anbernic,misc had hall_key on gpio0 PC3 (base 289) with no driver.  Expose a
+ * standard gpio-keys switch reporting SW_LID + wakeup, like the RG DS lid.
+ * pinctrl gpio_hall (base 1342-1344) already covers PC3.  Driver:
+ * drivers/input/keyboard/gpio_keys.c (CONFIG_KEYBOARD_GPIO, set).
+ * POLARITY is a hardware unknown (see device_todo): using ACTIVE_LOW to match
+ * the device-proven RG DS lid semantics. */
+/ {
+	gpio_keys_hall: gpio-keys-hall {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&gpio_hall>;
+
+		hall-lid {
+			label = "lid-switch";
+			gpios = <&gpio0 RK_PC3 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			wakeup-source;
+			debounce-interval = <20>;
+		};
+	};
+};
+
+/* -------- 5. Haptic motor via mainline pwm-vibrator --------
+ * anbernic,misc drove &pwm14 (base 295, period 1e6 ns = 1 kHz) with no driver.
+ * Bind mainline "pwm-vibrator" (drivers/input/misc/pwm-vibra.c) so Android gets
+ * a real force-feedback vibrator input device.  pwm14 is ALREADY status="okay"
+ * in rk3568-deep-rg_ds-2mipi.dtsi (line 1186, pinctrl &pwm14m0_pins), so it is
+ * NOT re-enabled here.  The driver requires the named "enable" pwm (mandatory);
+ * "vcc" is fetched non-optionally but returns a dummy regulator if absent, so
+ * vcc-supply is optional - we point it at the always-on vccsys for cleanliness.
+ * REQUIRES the one defconfig ADD: CONFIG_INPUT_PWM_VIBRA=y. */
+/ {
+	vibrator: pwm-vibrator {
+		compatible = "pwm-vibrator";
+		pwms = <&pwm14 0 1000000 0>;
+		pwm-names = "enable";
+		vcc-supply = <&vccsys>;
+		status = "okay";
+	};
+};
+
+/* -------- 6. Android parity nodes missing from rk3568-linux.dtsi --------
+ * The Plus chain pulls rk3568-linux.dtsi, NOT rk3568-android.dtsi, so OP-TEE
+ * and the RAM vendor-storage node (present only in the -android dtsi) are
+ * absent even though CONFIG_OPTEE/CONFIG_TEE (defconfig 985/986) and
+ * CONFIG_ROCKCHIP_VENDOR_STORAGE (939) are set.  These nodes are byte-for-byte
+ * the same as rk3568-android.dtsi (optee 32-37, vendor_storage 55-59,
+ * vendor_storage_rm 80-83).  The "firmware" and "reserved-memory" blocks below
+ * MERGE into the existing base nodes (firmware{scmi,sdei} in rk356x.dtsi:295,
+ * reserved-memory in rk356x.dtsi:434) by path.  OP-TEE also needs the tee/bl32
+ * blob in the boot chain + TAs in the vendor image to actually function - the
+ * DT node alone only exposes the SMC transport (see firmware_blobs). */
+/ {
+	firmware {
+		optee: optee {
+			compatible = "linaro,optee-tz";
+			method = "smc";
+		};
+	};
+
+	reserved-memory {
+		vendor_storage_rm: vendor-storage-rm@0 {
+			compatible = "rockchip,vendor-storage-rm";
+			reg = <0x0 0x0 0x0 0x0>;
+		};
+	};
+
+	vendor_storage: vendor-storage {
+		compatible = "rockchip,ram-vendor-storage";
+		memory-region = <&vendor_storage_rm>;
+		status = "okay";
+	};
+};
+
+/* -------- 7. Let Android run the low-battery charge UI --------
+ * The base charge-animation (label-less, base 298) has android-charge-on=0.
+ * Flip it on so the in-OS charging screen runs at low battery; the u-boot
+ * charge fields are left untouched (u-boot is out of scope). */
+&{/charge-animation} {
+	rockchip,android-charge-on = <1>;
+};
