@@ -50,6 +50,69 @@
 #define	JOY_CAL_DEADZONE	1000
 /* stock 4-deep moving average */
 #define	JOY_AVG_DEPTH		4
+/*
+ * Full-scale of the (mV << 15) / 1800 raw domain (1800 mV -> 0x8000).  Used to
+ * test how close a raw averaged sample sits to either electrical rail for the
+ * cross-axis deadzone below.  joy_rail_margin is how many raw units short of a
+ * rail still counts as "railed"; both are runtime-tunable via sysfs so the
+ * right-stick cross-axis compensation can be dialled in without a reflash.
+ */
+#define	JOY_ADC_FULLSCALE	0x8000
+/*
+ * "railed" band width (raw units): an axis counts as railed when its raw sample
+ * is within joy_rail_margin of either rail (0 or 0x8000).  Default 8000 (~440 mV)
+ * so a right-stick axis pushed past ~1360 mV / below ~440 mV (this panel tops out
+ * near 1620 mV, not the 1800 mV electrical rail) engages the cross-axis median.
+ */
+static int joy_rail_margin = 8000;
+/*
+ * Spike-rejecting median filter for the stick axes.  On this hardware, when one
+ * axis of a stick is driven to its mechanical extreme and the stick is MOVED,
+ * the OTHER axis' potentiometer throws fast erratic outliers (+/-100..220 mV
+ * bursts, measured; steady when held still), which the stock 4-sample mean only
+ * smears and the x3 gain then amplifies into a large visible bounce (the "jumping
+ * between 3 and 1 o'clock" on the right stick).  A median of the last
+ * joy_median_win raw samples rejects those outliers where a mean cannot.  Both
+ * knobs are runtime-tunable via sysfs so the window can be dialled in live.
+ *   joy_median_win  : median window (odd, 3..JOY_HIST_MAX); < 3 => legacy mean-4.
+ *   joy_median_railed: 1 => only median an axis while its PARTNER axis is railed
+ *                      (keeps normal centred-region movement at the crisp mean-4);
+ *                      0 => median always.
+ * Defaults (device-tuned on the RG DS at the 500 Hz poll below): a 21-sample
+ * window spans ~42 ms at 500 Hz, wide enough to outvote the ~19 ms spike bursts
+ * with ~20 ms of group delay, and gated to the extremes so normal aim is crisp.
+ */
+#define	JOY_HIST_MAX		31
+static int joy_median_win = 21;
+static int joy_median_railed = 1;
+/*
+ * ABS fuzz floor for the analog stick axes, in gained report units.
+ *
+ * The stock kernel's runtime "mode2" slew-limiter (joypad_adc_check, only
+ * armed via the touch/mouse sysfs flag) smooths the reported value against the
+ * previous sample with the exact bands:
+ *   |delta| <  320  -> hold previous
+ *   320 <= |delta| <  640  -> (prev*3 + new) / 4
+ *   640 <= |delta| < 1280  -> (prev + new) / 2
+ *   |delta| >= 1280 -> accept new
+ * That is bit-for-bit the Linux input core's input_defuzz_abs_event() run with
+ * fuzz = 640 (its bands are fuzz/2, fuzz, fuzz*2 with the identical 3:1 and 1:1
+ * weightings).  Feeding the input core fuzz = 640 therefore applies stock's own
+ * tuned slew band via the identical kernel code.
+ *
+ * IMPORTANT: stock itself gates that slew behind a mouse/touch-mode sysfs flag
+ * (off by default), so on a plain gamepad boot stock runs the RAW value and its
+ * DT button-adc-fuzz = 1 is a no-op at this gain (fuzz/2 rounds to 0) -- which
+ * is exactly the residual mid-throw jitter being reported.  Enabling the slew
+ * unconditionally is a deliberate GammaOS choice to kill that jitter; it is a
+ * jitter-vs-fine-aim trade (per-poll deltas below fuzz/2 = 320 are held), and
+ * is tunable: lower JOY_ABS_FUZZ, or set a larger DT/boot.ini button-adc-fuzz
+ * (which wins).  It smooths purely in the time domain toward the previous
+ * sample, so it never pulls an axis toward a cardinal/diagonal (no snapping),
+ * and real movement / endpoints produce deltas far above 1280 so travel and the
+ * 0.98 full-scale snap are untouched.
+ */
+#define	JOY_ABS_FUZZ		640
 
 struct bt_adc {
 	/* report value (mV) */
@@ -68,9 +131,31 @@ struct bt_adc {
 	int amux_ch;
 	/* adc data tuning value([percent), p = positive, n = negative */
 	int tuning_p, tuning_n;
-	/* stock 4-sample moving-average ring (report-domain values) */
-	int hist[JOY_AVG_DEPTH];
+	/* raw-sample ring: mean-4 (legacy) or median (spike reject), see stage 1-4 */
+	int hist[JOY_HIST_MAX];
 	int hidx;
+	/*
+	 * Per-direction endpoint scale, ported from the stock RG DS jokstick_cal
+	 * engine (jokstick_cal_init seeds all *_scale = 1000).  Positive
+	 * deflection is scaled by cal_scale_pos, negative by cal_scale_neg, both
+	 * as /1000 fixed point, applied before the global x3 gain.  At the
+	 * identity default (1000/1000) this is a no-op and the reported value is
+	 * byte-identical to the plain gain path.  It lets an axis whose electrical
+	 * rest is far off centre (the RG DS right-stick horizontal rests at ~88%
+	 * of scale) be normalised so both travel directions reach full scale
+	 * instead of the short side over-gaining into the endpoint.
+	 */
+	int cal_scale_pos, cal_scale_neg;
+	/*
+	 * Cross-axis rest deadzone: extra deadzone (report units, pre-gain) added
+	 * to THIS axis only while its partner stick axis is near an electrical
+	 * rail.  On this panel driving one right-stick axis to a hardware extreme
+	 * pulls the other axis a few tens of mV off centre, which the x3 gain and
+	 * the 0.98 snap turn into a small wrong-signed report; widening the victim
+	 * axis' deadzone only while its partner rails swallows that coupling
+	 * without touching normal use or genuine diagonals.  Default 0 = inert.
+	 */
+	int cross_dz;
 };
 
 struct analog_mux {
@@ -487,6 +572,112 @@ static DEVICE_ATTR(amux_debug, S_IWUSR | S_IRUGO,
 		   joypad_store_amux_debug);
 
 /*----------------------------------------------------------------------------*/
+/*
+ * Right-stick calibration knobs (live-tunable, so the per-direction endpoint
+ * scale and the cross-axis deadzone can be dialled in against a real sweep
+ * without a reflash; once confirmed the values are baked into the identity
+ * seeds in joypad_adc_setup).  Everything defaults to the identity (scale 1000,
+ * cross_dz 0), so these are no-ops until written.
+ *
+ *   .../singleadc-joypad/rx_scale_pos  rx_scale_neg   (ABS_RX per-direction /1000)
+ *   .../singleadc-joypad/ry_scale_pos  ry_scale_neg   (ABS_RY per-direction /1000)
+ *   .../singleadc-joypad/rx_cross_dz   ry_cross_dz    (extra dz while partner rails)
+ *   .../singleadc-joypad/rail_margin                  (raw units short of a rail)
+ */
+static struct bt_adc *joypad_adc_by_type(struct joypad *joypad, int type)
+{
+	int n;
+
+	for (n = 0; n < joypad->amux_count && n < 4; n++)
+		if (joypad->adcs[n].report_type == type)
+			return &joypad->adcs[n];
+	return NULL;
+}
+
+#define JOY_CAL_ATTR(_name, _type, _field)				\
+static ssize_t joypad_show_##_name(struct device *dev,			\
+		struct device_attribute *attr, char *buf)		\
+{									\
+	struct platform_device *pdev = to_platform_device(dev);		\
+	struct joypad *joypad = platform_get_drvdata(pdev);		\
+	struct bt_adc *adc = joypad_adc_by_type(joypad, _type);		\
+	return sprintf(buf, "%d\n", adc ? adc->_field : 0);		\
+}									\
+static ssize_t joypad_store_##_name(struct device *dev,			\
+		struct device_attribute *attr,				\
+		const char *buf, size_t count)				\
+{									\
+	struct platform_device *pdev = to_platform_device(dev);		\
+	struct joypad *joypad = platform_get_drvdata(pdev);		\
+	struct bt_adc *adc = joypad_adc_by_type(joypad, _type);		\
+	int v = (int)simple_strtoul(buf, NULL, 10);				\
+	if (adc) {							\
+		mutex_lock(&joypad->lock);				\
+		adc->_field = v;					\
+		mutex_unlock(&joypad->lock);				\
+	}								\
+	return count;							\
+}									\
+static DEVICE_ATTR(_name, S_IWUSR | S_IRUGO,				\
+		   joypad_show_##_name, joypad_store_##_name)
+
+JOY_CAL_ATTR(rx_scale_pos, ABS_RX, cal_scale_pos);
+JOY_CAL_ATTR(rx_scale_neg, ABS_RX, cal_scale_neg);
+JOY_CAL_ATTR(ry_scale_pos, ABS_RY, cal_scale_pos);
+JOY_CAL_ATTR(ry_scale_neg, ABS_RY, cal_scale_neg);
+JOY_CAL_ATTR(rx_cross_dz,  ABS_RX, cross_dz);
+JOY_CAL_ATTR(ry_cross_dz,  ABS_RY, cross_dz);
+
+static ssize_t joypad_show_rail_margin(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", joy_rail_margin);
+}
+static ssize_t joypad_store_rail_margin(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	joy_rail_margin = (int)simple_strtoul(buf, NULL, 10);
+	return count;
+}
+static DEVICE_ATTR(rail_margin, S_IWUSR | S_IRUGO,
+		   joypad_show_rail_margin, joypad_store_rail_margin);
+
+static ssize_t joypad_show_median_win(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", joy_median_win);
+}
+static ssize_t joypad_store_median_win(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	int v = (int)simple_strtoul(buf, NULL, 10);
+
+	if (v > JOY_HIST_MAX)
+		v = JOY_HIST_MAX;
+	if (v >= 3 && !(v & 1))		/* force odd so the median has a centre */
+		v -= 1;
+	joy_median_win = v;
+	return count;
+}
+static DEVICE_ATTR(median_win, S_IWUSR | S_IRUGO,
+		   joypad_show_median_win, joypad_store_median_win);
+
+static ssize_t joypad_show_median_railed(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", joy_median_railed);
+}
+static ssize_t joypad_store_median_railed(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	joy_median_railed = simple_strtoul(buf, NULL, 10) ? 1 : 0;
+	return count;
+}
+static DEVICE_ATTR(median_railed, S_IWUSR | S_IRUGO,
+		   joypad_show_median_railed, joypad_store_median_railed);
+
+/*----------------------------------------------------------------------------*/
 #ifdef __MURMUR__
 /*----------------------------------------------------------------------------*/
 /*
@@ -556,6 +747,15 @@ static struct attribute *joypad_attrs[] = {
 	&dev_attr_adc_cal.attr,
 	&dev_attr_amux_debug.attr,
 	&dev_attr_vol.attr,
+	&dev_attr_rx_scale_pos.attr,
+	&dev_attr_rx_scale_neg.attr,
+	&dev_attr_ry_scale_pos.attr,
+	&dev_attr_ry_scale_neg.attr,
+	&dev_attr_rx_cross_dz.attr,
+	&dev_attr_ry_cross_dz.attr,
+	&dev_attr_rail_margin.attr,
+	&dev_attr_median_win.attr,
+	&dev_attr_median_railed.attr,
 	NULL,
 };
 #else
@@ -567,6 +767,15 @@ static struct attribute *joypad_attrs[] = {
 	&dev_attr_enable.attr,
 	&dev_attr_adc_cal.attr,
 	&dev_attr_amux_debug.attr,
+	&dev_attr_rx_scale_pos.attr,
+	&dev_attr_rx_scale_neg.attr,
+	&dev_attr_ry_scale_pos.attr,
+	&dev_attr_ry_scale_neg.attr,
+	&dev_attr_rx_cross_dz.attr,
+	&dev_attr_ry_cross_dz.attr,
+	&dev_attr_rail_margin.attr,
+	&dev_attr_median_win.attr,
+	&dev_attr_median_railed.attr,
 	NULL,
 };
 #endif
@@ -624,47 +833,126 @@ static void joypad_adc_check(struct joypad *joypad)
 	int absv[4] = { 0 };
 
 	/*
-	 * Stage 1-4 (stock joypad_adc_check): one fresh sample per stick channel,
-	 * pushed into a 4-deep ring and 4-sample averaged, then centre-subtracted
-	 * against the rest calibration.  |deviation| is cached so the deadzone can
-	 * be radial (per physical stick).  Channels >= 4 are unused trigger slots
-	 * that stock forces to rest.
+	 * Stage 1-4: one fresh sample per stick channel into a raw ring, then
+	 * either the stock 4-sample mean or a spike-rejecting median (see the
+	 * joy_median_* knobs above), then centre-subtract against the rest
+	 * calibration.  |deviation| is cached for the per-axis deadzone below.
+	 * Channels >= 4 are unused trigger slots that stock forces to rest.
+	 *
+	 * Two passes so the median can be gated on the PARTNER axis being railed:
+	 * pass A reads every channel (so each partner's fresh raw is known), pass
+	 * B filters.  nstick counts the stick channels present.
 	 */
+	int rawnow[4] = { 0 };
+	int nstick = 0;
+
 	for (nbtn = 0; nbtn < joypad->amux_count && nbtn < 4; nbtn++) {
 		struct bt_adc *adc = &joypad->adcs[nbtn];
-		int sum = 0, s;
 
-		adc->hist[adc->hidx] = joypad_adc_read(joypad->amux, adc);
-		adc->hidx = (adc->hidx + 1) & (JOY_AVG_DEPTH - 1);
+		rawnow[nbtn] = joypad_adc_read(joypad->amux, adc);
+		adc->hist[adc->hidx] = rawnow[nbtn];
+		adc->hidx = (adc->hidx + 1) % JOY_HIST_MAX;
+		nstick = nbtn + 1;
+	}
 
-		for (s = 0; s < JOY_AVG_DEPTH; s++)
-			sum += adc->hist[s];
-		adc->value = sum / JOY_AVG_DEPTH;
+	for (nbtn = 0; nbtn < nstick; nbtn++) {
+		struct bt_adc *adc = &joypad->adcs[nbtn];
+		int win = joy_median_win;
+		bool use_median = (win >= 3);
+
+		if (use_median && joy_median_railed && (nbtn ^ 1) < nstick) {
+			int praw = rawnow[nbtn ^ 1];
+
+			/* partner not near a rail -> keep the crisp mean */
+			if (praw > joy_rail_margin &&
+			    praw < (JOY_ADC_FULLSCALE - joy_rail_margin))
+				use_median = false;
+		}
+
+		if (use_median) {
+			int tmp[JOY_HIST_MAX];
+			int i, j, key;
+
+			if (win > JOY_HIST_MAX)
+				win = JOY_HIST_MAX;
+			for (i = 0; i < win; i++)
+				tmp[i] = adc->hist[(adc->hidx - 1 - i +
+						    JOY_HIST_MAX) % JOY_HIST_MAX];
+			for (i = 1; i < win; i++) {	/* insertion sort */
+				key = tmp[i];
+				for (j = i - 1; j >= 0 && tmp[j] > key; j--)
+					tmp[j + 1] = tmp[j];
+				tmp[j + 1] = key;
+			}
+			adc->value = tmp[win / 2];
+		} else {
+			int sum = 0, i;
+
+			for (i = 0; i < JOY_AVG_DEPTH; i++)
+				sum += adc->hist[(adc->hidx - 1 - i +
+						  JOY_HIST_MAX) % JOY_HIST_MAX];
+			adc->value = sum / JOY_AVG_DEPTH;
+		}
 
 		centred[nbtn] = adc->value - adc->cal;
 		absv[nbtn] = abs(centred[nbtn]);
 	}
 
 	/*
-	 * Stage 5: radial rest deadzone -> global gain -> 0.98 endpoint snap.
-	 * Channels 0/1 and 2/3 are the two physical sticks; a stick is "live" if
-	 * EITHER of its axes leaves the deadzone, so diagonals are never clipped
-	 * (this is what removes the old fixed-shift cardinal snapping).  The x3.0
-	 * gain deliberately overdrives and the 0.98-of-full-scale snap catches it
-	 * at the hard endpoint, guaranteeing full travel; each axis is snapped
-	 * against its own min/max independently.
+	 * Stage 5: PER-AXIS rest deadzone (+ cross-axis widening) -> per-direction
+	 * endpoint scale -> global x3 gain -> 0.98 endpoint snap.
+	 *
+	 * Each axis is zeroed by its OWN deviation, independent of the other axis
+	 * on the same stick.  Stock uses a radial test ("stick live if EITHER axis
+	 * leaves the deadzone"), but on this hardware that leaks: at an X extreme
+	 * the right stick's X rails, so a radial test keeps Y "live" even when Y is
+	 * physically centred -- and Y's small rest offset (its centre shifts and
+	 * its range compresses at the rail) plus rest-noise then gets the x3 gain
+	 * and shows up as the reported Y drifting/twitching (and feeling inverted)
+	 * at the left/right extremes.  A per-axis deadzone zeroes that idle-axis
+	 * wobble; a genuine diagonal (both axes past the deadzone) is still
+	 * reported on both axes, so real diagonal travel is unaffected.
+	 *
+	 * On top of the flat per-axis deadzone we add two ported-from-stock levers,
+	 * both inert at their identity defaults so this is byte-identical to the
+	 * plain path until the right stick is tuned:
+	 *   - cross_dz: while an axis' PARTNER (nbtn ^ 1) sits near an electrical
+	 *     rail, this axis' deadzone is widened by cross_dz.  The RG DS right
+	 *     stick's cross-axis coupling only appears at the partner's extreme, so
+	 *     widening the victim's deadzone only then swallows the coupling
+	 *     without costing fine aim anywhere else.
+	 *   - cal_scale_pos/neg: stock's per-direction endpoint scale.  The right
+	 *     stick's horizontal rests at ~88% of scale, so its two travel
+	 *     directions are wildly asymmetric; an independent scale per direction
+	 *     lets both directions reach full scale instead of the short side
+	 *     over-gaining into the endpoint (which is what flips the sign).
+	 *
+	 * The x3.0 gain still overdrives and the 0.98-of-full-scale snap still
+	 * catches the hard endpoint, guaranteeing full travel; each axis snaps
+	 * against its own min/max.
 	 */
 	for (nbtn = 0; nbtn < joypad->amux_count && nbtn < 4; nbtn++) {
 		struct bt_adc *adc = &joypad->adcs[nbtn];
 		int val = centred[nbtn];
-		bool outside = (nbtn < 2)
-			? (absv[0] > JOY_CAL_DEADZONE || absv[1] > JOY_CAL_DEADZONE)
-			: (absv[2] > JOY_CAL_DEADZONE || absv[3] > JOY_CAL_DEADZONE);
+		int dz = JOY_CAL_DEADZONE;
+		int dir_scale;
 
-		if (!outside)
+		if (adc->cross_dz && (nbtn ^ 1) < 4) {
+			int praw = centred[nbtn ^ 1] +
+				   joypad->adcs[nbtn ^ 1].cal;
+
+			if (praw <= joy_rail_margin ||
+			    praw >= (JOY_ADC_FULLSCALE - joy_rail_margin))
+				dz += adc->cross_dz;
+		}
+
+		if (absv[nbtn] <= dz)
 			val = 0;
 
-		val = (JOY_CAL_SCALE * val) / 1000;
+		dir_scale = (val >= 0) ? adc->cal_scale_pos : adc->cal_scale_neg;
+		val = (int)(((s64)val * dir_scale) / 1000);
+
+		val = (int)(((s64)JOY_CAL_SCALE * val) / 1000);
 
 		if (val > (adc->max * 98) / 100)
 			val = adc->max;
@@ -723,6 +1011,11 @@ static int joypad_open(struct input_dev *input)
 			continue;
 		}
 		adc->cal = adc->value;
+		/* prime the whole raw ring with the rest read so the median /
+		 * mean is stable from the first poll (no wrap-to-zero glitch). */
+		for (int h = 0; h < JOY_HIST_MAX; h++)
+			adc->hist[h] = adc->value;
+		adc->hidx = 0;
 		dev_info(joypad->dev, "%s : adc[%d] adc->cal = %d\n",
 			__func__, nbtn, adc->cal);
 	}
@@ -858,6 +1151,18 @@ static int joypad_adc_setup(struct device *dev, struct joypad *joypad)
 		}
 		adc->amux_ch = nbtn;
 		adc->invert = false;
+
+		/*
+		 * Identity calibration defaults, matching the stock jokstick_cal
+		 * seeds (all *_scale = 1000, no cross-axis deadzone).  With these
+		 * the processing is byte-identical to the plain gain path; the
+		 * right-stick values are tuned later (via sysfs, then baked here)
+		 * once the panel's per-direction spans and cross-axis coupling
+		 * have been measured.
+		 */
+		adc->cal_scale_pos = 1000;
+		adc->cal_scale_neg = 1000;
+		adc->cross_dz = 0;
 
 		switch (nbtn) {
 			/*
@@ -1078,15 +1383,30 @@ static int joypad_input_setup(struct device *dev, struct joypad *joypad)
 	__set_bit(EV_ABS, input->evbit);
 	for(nbtn = 0; nbtn < joypad->amux_count; nbtn++) {
 		struct bt_adc *adc = &joypad->adcs[nbtn];
+		int fuzz = joypad->bt_adc_fuzz;
+
+		/*
+		 * The stick axes (ch0..3) are reported in the gained 0..0x4000
+		 * domain, where the DT's button-adc-fuzz (1) is a no-op and the
+		 * amplified SARADC noise shows up as on-screen jitter when the
+		 * stick is held part-way.  Give the input core the stock mode2
+		 * slew band (JOY_ABS_FUZZ) so its input_defuzz_abs_event()
+		 * reproduces stock's exact noise rejection without snapping to
+		 * axes or clipping travel.  Honour a larger DT/boot.ini fuzz if
+		 * one is set.  Trigger slots (>= 4) keep the DT fuzz.
+		 */
+		if (nbtn < 4 && fuzz < JOY_ABS_FUZZ)
+			fuzz = JOY_ABS_FUZZ;
+
 		input_set_abs_params(input, adc->report_type,
 				adc->min, adc->max,
-				joypad->bt_adc_fuzz,
+				fuzz,
 				joypad->bt_adc_flat);
 		dev_info(dev,
 			"%s : SCALE = %d, ABS min = %d, max = %d,"
 			" fuzz = %d, flat = %d, deadzone = %d\n",
 			__func__, adc->scale, adc->min, adc->max,
-			joypad->bt_adc_fuzz, joypad->bt_adc_flat,
+			fuzz, joypad->bt_adc_flat,
 			joypad->bt_adc_deadzone);
 		dev_info(dev,
 			"%s : adc tuning_p = %d, adc_tuning_n = %d\n\n",
