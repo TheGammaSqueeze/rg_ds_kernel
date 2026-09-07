@@ -33,22 +33,23 @@
 #define	ADC_DATA_TUNING(x, p)	((x * p) / 100)
 #define	ADC_TUNING_DEFAULT	180
 /*
- * Analog report range. The RG DS SARADC is 10-bit (raw 0..1023, rest ~512), so
- * the usable per-axis deviation is +-512. The stock kernel reports each stick
- * axis on a (button-adc-scale << 14) = 0x4000 range, i.e. it left-shifts the
- * 10-bit deviation by 5 (512 << 5 == 0x4000). Match that here so the analog
- * axes span their full range with the unmodified stock device tree.
+ * Analog model, reverse-engineered 1:1 from the stock RG DS 6.1.141 kernel
+ * (joypad_adc_read / joypad_adc_check).  The SARADC is read in the PROCESSED
+ * (millivolt) domain, 0..1800 mV mapped onto 0..0x8000 via (mV << 15) / 1800;
+ * rest is ~900 mV so a centred axis sits at ~0x4000.  Each axis is then
+ * centre-subtracted against its rest calibration, 4-sample averaged, run
+ * through a radial rest deadzone (snap to exactly 0), amplified by a fixed
+ * global gain and snapped to the endpoint once it passes 0.98 of full scale.
+ * This overdrive+snap is what guarantees FULL TRAVEL, and processing every
+ * axis independently is what avoids the cardinal-snap the old fixed shift had.
  */
 #define	ADC_ABS_RANGE		0x4000
-#define	ADC_RAW_SHIFT		5
-/*
- * The RG DS SARADC carries a few LSB of rest jitter. Once shifted up to the
- * report range that shows as stick drift, whereas the stock kernel reads a
- * rock-steady 0 at rest. Apply a small raw-count deadzone (removed then the
- * remainder rescaled so travel still starts from 0 just past the deadzone) so
- * the axes sit at exactly 0 when centred.
- */
-#define	ADC_DEADZONE_RAW	24
+/* stock jokstick_cal_scale = 3000 (x3.0 gain), applied as (val * SCALE)/1000 */
+#define	JOY_CAL_SCALE		3000
+/* stock jokstick_cal_deadzone = 1000 (radial rest deadzone, in report units) */
+#define	JOY_CAL_DEADZONE	1000
+/* stock 4-deep moving average */
+#define	JOY_AVG_DEPTH		4
 
 struct bt_adc {
 	/* report value (mV) */
@@ -67,6 +68,9 @@ struct bt_adc {
 	int amux_ch;
 	/* adc data tuning value([percent), p = positive, n = negative */
 	int tuning_p, tuning_n;
+	/* stock 4-sample moving-average ring (report-domain values) */
+	int hist[JOY_AVG_DEPTH];
+	int hidx;
 };
 
 struct analog_mux {
@@ -216,20 +220,20 @@ static int joypad_amux_select(struct analog_mux *amux, int channel)
 /*----------------------------------------------------------------------------*/
 static int joypad_adc_read(struct analog_mux *amux, struct bt_adc *adc)
 {
-	int value;
-
+	int value = 0;
 
 	if (joypad_amux_select(amux, adc->amux_ch))
 		return 0;
 
-	iio_read_channel_raw(amux->iio_ch, &value);
+	/*
+	 * Stock reads the PROCESSED (millivolt) IIO value, not raw counts, and
+	 * maps 0..1800 mV onto 0..0x8000 via (mV << 15) / 1800 (divisor exact).
+	 * Range enforcement, deadzone and invert are all done in
+	 * joypad_adc_check(), matching stock; this returns a pure linear value.
+	 */
+	iio_read_channel_processed(amux->iio_ch, &value);
 
-	value *= adc->scale;
-#ifdef __LEFT_JOYSTICK_INVERT__
-	return value;
-#else
-	return (adc->invert ? (adc->max - value) : value);
-#endif
+	return (int)(((s64)value << 15) / ADC_MAX_VOLTAGE);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -616,51 +620,70 @@ static void joypad_gpio_check(struct joypad *joypad)
 static void joypad_adc_check(struct joypad *joypad)
 {
 	int nbtn;
+	int centred[4] = { 0 };
+	int absv[4] = { 0 };
 
-	for (nbtn = 0; nbtn < joypad->amux_count; nbtn++) {
+	/*
+	 * Stage 1-4 (stock joypad_adc_check): one fresh sample per stick channel,
+	 * pushed into a 4-deep ring and 4-sample averaged, then centre-subtracted
+	 * against the rest calibration.  |deviation| is cached so the deadzone can
+	 * be radial (per physical stick).  Channels >= 4 are unused trigger slots
+	 * that stock forces to rest.
+	 */
+	for (nbtn = 0; nbtn < joypad->amux_count && nbtn < 4; nbtn++) {
+		struct bt_adc *adc = &joypad->adcs[nbtn];
+		int sum = 0, s;
+
+		adc->hist[adc->hidx] = joypad_adc_read(joypad->amux, adc);
+		adc->hidx = (adc->hidx + 1) & (JOY_AVG_DEPTH - 1);
+
+		for (s = 0; s < JOY_AVG_DEPTH; s++)
+			sum += adc->hist[s];
+		adc->value = sum / JOY_AVG_DEPTH;
+
+		centred[nbtn] = adc->value - adc->cal;
+		absv[nbtn] = abs(centred[nbtn]);
+	}
+
+	/*
+	 * Stage 5: radial rest deadzone -> global gain -> 0.98 endpoint snap.
+	 * Channels 0/1 and 2/3 are the two physical sticks; a stick is "live" if
+	 * EITHER of its axes leaves the deadzone, so diagonals are never clipped
+	 * (this is what removes the old fixed-shift cardinal snapping).  The x3.0
+	 * gain deliberately overdrives and the 0.98-of-full-scale snap catches it
+	 * at the hard endpoint, guaranteeing full travel; each axis is snapped
+	 * against its own min/max independently.
+	 */
+	for (nbtn = 0; nbtn < joypad->amux_count && nbtn < 4; nbtn++) {
+		struct bt_adc *adc = &joypad->adcs[nbtn];
+		int val = centred[nbtn];
+		bool outside = (nbtn < 2)
+			? (absv[0] > JOY_CAL_DEADZONE || absv[1] > JOY_CAL_DEADZONE)
+			: (absv[2] > JOY_CAL_DEADZONE || absv[3] > JOY_CAL_DEADZONE);
+
+		if (!outside)
+			val = 0;
+
+		val = (JOY_CAL_SCALE * val) / 1000;
+
+		if (val > (adc->max * 98) / 100)
+			val = adc->max;
+		else if (val < (adc->min * 98) / 100)
+			val = adc->min;
+
+		adc->value = val;
+		input_report_abs(joypad->input, adc->report_type,
+				 adc->invert ? -val : val);
+	}
+
+	/* Unused trigger slots (>= 4): report rest, matching stock. */
+	for (nbtn = 4; nbtn < joypad->amux_count; nbtn++) {
 		struct bt_adc *adc = &joypad->adcs[nbtn];
 
-		adc->value = joypad_adc_read(joypad->amux, adc);
-		if (!adc->value) {
-			//dev_err(joypad->dev, "%s : saradc channels[%d]! adc->value : %d\n",__func__, nbtn, adc->value);
-			continue;
-		}
-		adc->value = adc->value - adc->cal;
-
-		/*
-		 * Deadzone: zero (and then offset-remove) small deviations so a
-		 * centred stick reports exactly 0, matching the stock kernel. The
-		 * DT button-adc-deadzone is 1 which is smaller than this SARADC's
-		 * rest jitter, so enforce a sensible raw floor.
-		 */
-		{
-			int dz = joypad->bt_adc_deadzone;
-
-			if (dz < ADC_DEADZONE_RAW)
-				dz = ADC_DEADZONE_RAW;
-			if (abs(adc->value) < dz)
-				adc->value = 0;
-			else
-				adc->value += (adc->value > 0) ? -dz : dz;
-		}
-
-		/* Scale the raw 10-bit ADC deviation (+-512) up to the report
-		 * range (+-ADC_ABS_RANGE). The stock kernel reports on a
-		 * (scale << 14) axis, i.e. the 10-bit deviation shifted left by
-		 * ADC_RAW_SHIFT (512 << 5 == 0x4000). The DT tuning values are 1
-		 * on this platform, so the old (value * tuning / 100) step just
-		 * collapsed the axis to ~1% and is intentionally dropped. */
-		adc->value <<= ADC_RAW_SHIFT;
-		if (adc->scale)
-			adc->value *= adc->scale;
-
-		adc->value = adc->value > adc->max ? adc->max : adc->value;
-		adc->value = adc->value < adc->min ? adc->min : adc->value;
-
-		input_report_abs(joypad->input,
-			adc->report_type,
-			adc->invert ? adc->value * (-1) : adc->value);
+		adc->value = 0;
+		input_report_abs(joypad->input, adc->report_type, 0);
 	}
+
 	input_sync(joypad->input);
 }
 
