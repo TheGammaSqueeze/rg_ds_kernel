@@ -1620,8 +1620,8 @@
 			charger {
 				compatible = "rk817,charger";
 				min_input_voltage = <0x1194>;
-				max_input_current = <0x5dc>;
-				max_chrg_current = <0x7d0>;
+				max_input_current = <0xbb8>;	/* ROCKNIX parity (was 0x5dc/1500); needs a 5V/3A+ charger */
+				max_chrg_current = <0xdac>;	/* ROCKNIX parity (was 0x7d0/2000); RK817 hardware max */
 				max_chrg_voltage = <0x10fe>;
 				chrg_term_mode = <0x02>;
 				chrg_finish_cur = <0xc8>;
