@@ -1100,7 +1100,7 @@
 	i2c-scl-falling-time-ns = <4>;
 
 	aw883xx1:aw883xx_smartpa@34 {
-		compatible = "awinic,aw883xx_smartpa";
+		compatible = "awinic,aw88166";
 		#sound-dai-cells = <0>;
 		reg = <0x34>;
 		reset-gpio= <&gpio4 RK_PA7 0>; 
@@ -1111,6 +1111,8 @@
 		re-min = <1000>;
 		re-max = <40000>;
 		sound-channel = <0>;
+		awinic,audio-channel = <0>;
+		sound-name-prefix = "Left";
 		
 		clocks = <&cru I2S3_MCLKOUT_TX>;
 		clock-names = "mclk";
@@ -1121,7 +1123,7 @@
 	};
 
 	aw883xx2:aw883xx_smartpa@35 {
-		compatible = "awinic,aw883xx_smartpa";
+		compatible = "awinic,aw88166";
 		#sound-dai-cells = <0>;
 		reg = <0x35>;
 		reset-gpio= <&gpio4 RK_PB2 0>; 
@@ -1132,6 +1134,8 @@
 		re-min = <1000>; 
 		re-max = <40000>;
 		sound-channel = <1>;
+		awinic,audio-channel = <1>;
+		sound-name-prefix = "Right";
 		clocks = <&cru I2S3_MCLKOUT_TX>;
 		clock-names = "mclk";
 		assigned-clocks = <&cru CLK_I2S3_2CH_TX>;
@@ -1391,8 +1395,7 @@
 #endif
 
 &sdmmc0 {
-	max-frequency = <150000000>;	//GammaOS: UHS-I SDR104 on boot SD (was capped 50MHz)
-	//max-frequency = <50000000>;	//GammaOS: raised to SDR104 150MHz above
+	max-frequency = <50000000>;	//GammaOS: UHS-I DDR50 - SDR104@150MHz tuning finds no good sample phase on this board (All phases bad) and falls back to HS-50; DDR50 doubles throughput at the safe 50MHz clock and its tuning failure is non-fatal
 	supports-sd;
 	no-sdio;
 	no-mmc;
@@ -1405,8 +1408,7 @@
     
 	sd-uhs-sdr12;
 	sd-uhs-sdr25;
-	sd-uhs-sdr50;
-	sd-uhs-sdr104;
+	sd-uhs-ddr50;
 	vmmc-supply = <&vcc_sd0>;    //sd vdd
 	vqmmc-supply = <&vccio_sd>;  //sd io,VOLTAGE 1.8V--3.3V
 	pinctrl-names = "default";

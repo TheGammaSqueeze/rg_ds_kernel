@@ -307,3 +307,27 @@
 &{/charge-animation} {
 	rockchip,android-charge-on = <1>;
 };
+/* ======================================================================
+ * GammaOS overclock (parity with the RG DS OC): CPU 1.992 -> 2.16 GHz and
+ * GPU 800 -> 900 MHz. Voltages copied from the device-proven RG DS OC
+ * (CPU 2160 @ 1.20V, GPU 900 @ 1.05V). CPU keeps the 0xf9 SKU mask of the
+ * stock top OPP; the GPU 900 uses 0x06 to cover both the RK3568J (0x04) and
+ * RK3568M (0x02) GPU SKU bins. NOTE: 800MHz+ GPU is Rockchip "overdrive" -
+ * sustained high-temperature use can shorten GPU lifetime (rk3568.dtsi note).
+ * ====================================================================== */
+&cpu0_opp_table {
+	opp-2160000000 {
+		opp-supported-hw = <0xf9 0xffff>;
+		opp-hz = /bits/ 64 <2160000000>;
+		opp-microvolt = <1200000 1200000 1200000>;
+		clock-latency-ns = <40000>;
+	};
+};
+
+&gpu_opp_table {
+	opp-900000000 {
+		opp-supported-hw = <0x06 0xffff>;
+		opp-hz = /bits/ 64 <900000000>;
+		opp-microvolt = <1050000 1050000 1050000>;
+	};
+};
