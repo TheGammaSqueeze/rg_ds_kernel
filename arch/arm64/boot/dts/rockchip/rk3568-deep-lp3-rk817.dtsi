@@ -1391,8 +1391,8 @@
 #endif
 
 &sdmmc0 {
-	//max-frequency = <150000000>;
-	max-frequency = <50000000>;
+	max-frequency = <150000000>;	//GammaOS: UHS-I SDR104 on boot SD (was capped 50MHz)
+	//max-frequency = <50000000>;	//GammaOS: raised to SDR104 150MHz above
 	supports-sd;
 	no-sdio;
 	no-mmc;
