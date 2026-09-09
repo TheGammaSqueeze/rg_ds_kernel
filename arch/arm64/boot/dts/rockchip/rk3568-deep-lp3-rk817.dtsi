@@ -1403,7 +1403,7 @@
 #endif
 
 &sdmmc0 {
-	max-frequency = <50000000>;	//GammaOS: UHS-I DDR50 - SDR104@150MHz tuning finds no good sample phase on this board (All phases bad) and falls back to HS-50; DDR50 doubles throughput at the safe 50MHz clock and its tuning failure is non-fatal
+	max-frequency = <50000000>;	// UHS DDR50 = best reliable mode on THIS board (tested via dd-flash+reboot 2026-09-09): SDR104@150 -> "All phases bad" (signal), falls to HS-50; SDR104@120 tunes (phase 18) but runs at 50MHz ACTUAL clock (source-capped) -> single-data ~21 MB/s, worse than DDR50's double-data ~42R/30W. See sd_research/NOTES.md.
 	supports-sd;
 	no-sdio;
 	no-mmc;
