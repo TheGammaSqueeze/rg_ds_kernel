@@ -669,8 +669,13 @@
 
 &vop {
 	status = "okay";
+	/* Both VP dclks MUST share ONE PLL for vop2_crtc_sync to hold: two
+	 * independent PLLs (HPLL for VP0, VPLL for VP1) drift after the synced
+	 * standby-release so the panels re-desync (the "RG DS works, Plus does
+	 * not" bug). Put VP0 AND VP1 dclks on HPLL, matching the RG DS. Both
+	 * panels are identical 1024x768@60 so one PLL serves both. */
 	assigned-clocks = <&cru DCLK_VOP0>, <&cru DCLK_VOP1>;
-	assigned-clock-parents = <&pmucru PLL_HPLL>, <&cru PLL_VPLL>;
+	assigned-clock-parents = <&pmucru PLL_HPLL>, <&pmucru PLL_HPLL>;
 	vop-supply = <&vdd_logic>;
 	/* Low-latency dual-screen: sync VP0(DSI0 top)+VP1(DSI1 bottom) scanout
 	 * start (vop2_crtc_sync) so the two 1024x768 panels are phase-aligned,
