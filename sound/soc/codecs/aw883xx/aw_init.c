@@ -216,6 +216,15 @@ static void aw_pid_2049_set_cfg_f0_fs(struct aw_device *aw_dev, uint32_t *f0_fs)
 	aw_dev_dbg(aw883xx->dev, "get i2s fs:%d", fs);
 	*f0_fs = fs / 8;
 
+	/*
+	 * AW88166 (0x2066) has no CFGF0_FS DSP-memory register; Awinic's
+	 * 0x2066 driver drops this legacy write entirely (f0_fs is carried
+	 * in the ACF cfg). Writing the 0x2049 address here would land in the
+	 * wrong DSP window, so skip it on 0x2066.
+	 */
+	if (aw_dev->chip_id == AW883XX_PID_2066)
+		return;
+
 	aw883xx_dsp_write(aw883xx,
 		AW_PID_2049_DSP_REG_CFGF0_FS, *f0_fs, AW_DSP_32_DATA);
 }
@@ -255,6 +264,18 @@ static int aw_pid_2049_get_hw_mon_st(struct aw_device *aw_dev,
 	uint32_t temp_en = 0;
 	uint32_t temp_switch = 0;
 	struct aw883xx *aw883xx = (struct aw883xx *)aw_dev->private_data;
+
+	/*
+	 * AW88166 (0x2066) uses a different hw-monitor architecture and has no
+	 * TEMP_SWITCH DSP register. Awinic's 0x2066 driver drives hw-monitor
+	 * from SYSCTRL2, not from this DSP read path. hw-monitor is disabled on
+	 * this device, so report "disabled" rather than read a bogus DSP addr.
+	 */
+	if (aw_dev->chip_id == AW883XX_PID_2066) {
+		*is_enable = false;
+		*temp_flag = AW_INTERNAL_TEMP;
+		return 0;
+	}
 
 	ret = aw883xx_dsp_read(aw883xx,
 		AW_PID_2049_DSP_REG_CFG_MBMEC_GLBCFG, &vbat_en, AW_DSP_16_DATA);
@@ -320,7 +341,8 @@ static int aw_pid_2049_dsp_fw_check(struct aw_device *aw_dev)
 {
 	struct aw_prof_desc *set_prof_desc = NULL;
 	struct aw_sec_data_desc *dsp_fw_desc = NULL;
-	uint16_t base_addr = AW_PID_2049_DSP_FW_ADDR;
+	uint16_t base_addr = (aw_dev->chip_id == AW883XX_PID_2066) ?
+			AW_PID_2066_DSP_FW_ADDR : AW_PID_2049_DSP_FW_ADDR;
 	uint16_t addr = base_addr;
 	int ret, i;
 	uint32_t dsp_val;
@@ -366,6 +388,13 @@ static int aw_pid_2049_dsp_fw_check(struct aw_device *aw_dev)
 static int aw883xx_dev_init(struct aw883xx *aw883xx)
 {
 	struct aw_device *aw_pa = NULL;
+	/*
+	 * AW88166 (0x2066) reuses the 0x2049 op-set but has a different DSP
+	 * memory map. Every DSP-address descriptor below must select the
+	 * 0x2066 address for this chip, otherwise the ACF image lands in the
+	 * wrong DSP RAM window and the DSP never boots (silence).
+	 */
+	bool is2066 = (aw883xx->chip_id == AW883XX_PID_2066);
 
 	aw_pa = devm_kzalloc(aw883xx->dev, sizeof(struct aw_device), GFP_KERNEL);
 	if (aw_pa == NULL) {
@@ -431,7 +460,12 @@ static int aw883xx_dev_init(struct aw883xx *aw883xx)
 	aw_pa->mute_desc.enable = AW_PID_2049_HMUTE_ENABLE_VALUE;
 	aw_pa->mute_desc.disable = AW_PID_2049_HMUTE_DISABLE_VALUE;
 
-	aw_pa->vcalb_desc.vcalb_dsp_reg = AW_PID_2049_DSP_REG_VCALB;
+	/*
+	 * 0x2066: DSPVCALB is a plain I2C register (0x4A), not DSP memory.
+	 * aw_dev_set_vcalb() branches on chip_id to use plain reg access.
+	 */
+	aw_pa->vcalb_desc.vcalb_dsp_reg = is2066 ?
+			AW_PID_2066_DSPVCALB_REG : AW_PID_2049_DSP_REG_VCALB;
 	aw_pa->vcalb_desc.data_type = AW_DSP_16_DATA;
 	aw_pa->vcalb_desc.vcal_factor = AW_PID_2049_VCAL_FACTOR;
 	aw_pa->vcalb_desc.cabl_base_value = AW_PID_2049_CABL_BASE_VALUE;
@@ -492,8 +526,10 @@ static int aw883xx_dev_init(struct aw883xx *aw883xx)
 
 	aw_pa->dsp_mem_desc.dsp_madd_reg = AW_PID_2049_DSPMADD_REG;
 	aw_pa->dsp_mem_desc.dsp_mdat_reg = AW_PID_2049_DSPMDAT_REG;
-	aw_pa->dsp_mem_desc.dsp_cfg_base_addr = AW_PID_2049_DSP_CFG_ADDR;
-	aw_pa->dsp_mem_desc.dsp_fw_base_addr = AW_PID_2049_DSP_FW_ADDR;
+	aw_pa->dsp_mem_desc.dsp_cfg_base_addr = is2066 ?
+			AW_PID_2066_DSP_CFG_ADDR : AW_PID_2049_DSP_CFG_ADDR;
+	aw_pa->dsp_mem_desc.dsp_fw_base_addr = is2066 ?
+			AW_PID_2066_DSP_FW_ADDR : AW_PID_2049_DSP_FW_ADDR;
 
 	aw_pa->voltage_desc.reg = AW_PID_2049_VBAT_REG;
 	aw_pa->voltage_desc.vbat_range = AW_PID_2049_VBAT_RANGE;
@@ -503,7 +539,8 @@ static int aw883xx_dev_init(struct aw883xx *aw883xx)
 	aw_pa->temp_desc.sign_mask = AW_PID_2049_TEMP_SIGN_MASK;
 	aw_pa->temp_desc.neg_mask = AW_PID_2049_TEMP_NEG_MASK;
 
-	aw_pa->vmax_desc.dsp_reg = AW_PID_2049_DSP_REG_VMAX;
+	aw_pa->vmax_desc.dsp_reg = is2066 ?
+			AW_PID_2066_DSP_REG_VMAX : AW_PID_2049_DSP_REG_VMAX;
 	aw_pa->vmax_desc.data_type = AW_DSP_16_DATA;
 
 	aw_pa->ipeak_desc.reg = AW_PID_2049_SYSCTRL2_REG;
@@ -525,54 +562,79 @@ static int aw883xx_dev_init(struct aw883xx *aw883xx)
 	aw_pa->spkr_temp_desc.reg = AW_PID_2049_ASR2_REG;
 
 	/*32-bit data types need bypass dsp*/
-	aw_pa->ra_desc.dsp_reg = AW_PID_2049_DSP_REG_CFG_ADPZ_RA;
+	aw_pa->ra_desc.dsp_reg = is2066 ?
+			AW_PID_2066_DSP_REG_CFG_ADPZ_RA : AW_PID_2049_DSP_REG_CFG_ADPZ_RA;
 	aw_pa->ra_desc.data_type = AW_DSP_32_DATA;
 
 	/*32-bit data types need bypass dsp*/
-	aw_pa->cali_cfg_desc.actampth_reg = AW_PID_2049_DSP_REG_CFG_MBMEC_ACTAMPTH;
+	aw_pa->cali_cfg_desc.actampth_reg = is2066 ?
+			AW_PID_2066_DSP_REG_CFG_MBMEC_ACTAMPTH : AW_PID_2049_DSP_REG_CFG_MBMEC_ACTAMPTH;
 	aw_pa->cali_cfg_desc.actampth_data_type = AW_DSP_32_DATA;
 
 	/*32-bit data types need bypass dsp*/
-	aw_pa->cali_cfg_desc.noiseampth_reg = AW_PID_2049_DSP_REG_CFG_MBMEC_NOISEAMPTH;
+	aw_pa->cali_cfg_desc.noiseampth_reg = is2066 ?
+			AW_PID_2066_DSP_REG_CFG_MBMEC_NOISEAMPTH : AW_PID_2049_DSP_REG_CFG_MBMEC_NOISEAMPTH;
 	aw_pa->cali_cfg_desc.noiseampth_data_type = AW_DSP_32_DATA;
 
-	aw_pa->cali_cfg_desc.ustepn_reg = AW_PID_2049_DSP_REG_CFG_ADPZ_USTEPN;
+	aw_pa->cali_cfg_desc.ustepn_reg = is2066 ?
+			AW_PID_2066_DSP_REG_CFG_ADPZ_USTEPN : AW_PID_2049_DSP_REG_CFG_ADPZ_USTEPN;
 	aw_pa->cali_cfg_desc.ustepn_data_type = AW_DSP_16_DATA;
 
-	aw_pa->cali_cfg_desc.alphan_reg = AW_PID_2049_DSP_REG_CFG_RE_ALPHA;
+	aw_pa->cali_cfg_desc.alphan_reg = is2066 ?
+			AW_PID_2066_DSP_REG_CFG_RE_ALPHA : AW_PID_2049_DSP_REG_CFG_RE_ALPHA;
 	aw_pa->cali_cfg_desc.alphan_data_type = AW_DSP_16_DATA;
 
 	/*32-bit data types need bypass dsp*/
-	aw_pa->adpz_re_desc.dsp_reg = AW_PID_2049_DSP_REG_CFG_ADPZ_RE;
+	aw_pa->adpz_re_desc.dsp_reg = is2066 ?
+			AW_PID_2066_DSP_REG_CFG_ADPZ_RE : AW_PID_2049_DSP_REG_CFG_ADPZ_RE;
 	aw_pa->adpz_re_desc.data_type = AW_DSP_32_DATA;
 	aw_pa->adpz_re_desc.shift = AW_PID_2049_DSP_RE_SHIFT;
 
+	/* TODO 2066: cal/monitor-only, Awinic's 0x2066 driver does not define
+	 * ADPZ_T0 / COILALPHA (this cal path is disabled on this device), so
+	 * leave the 0x2049 addresses. Do not guess: these are not touched on
+	 * the playback-start path. */
 	aw_pa->t0_desc.dsp_reg = AW_PID_2049_DSP_CFG_ADPZ_T0;
 	aw_pa->t0_desc.data_type = AW_DSP_16_DATA;
 	aw_pa->t0_desc.coilalpha_reg = AW_PID_2049_DSP_CFG_ADPZ_COILALPHA;
 	aw_pa->t0_desc.coil_type = AW_DSP_16_DATA;
 
+	/* cal-only (CALRE); 0x2066 value confirmed from aw883xx_pid_2066_reg.h */
 	aw_pa->ste_re_desc.shift = AW_PID_2049_DSP_REG_CALRE_SHIFT;
-	aw_pa->ste_re_desc.dsp_reg = AW_PID_2049_DSP_REG_CALRE;
+	aw_pa->ste_re_desc.dsp_reg = is2066 ?
+			AW_PID_2066_DSP_REG_CALRE : AW_PID_2049_DSP_REG_CALRE;
 	aw_pa->ste_re_desc.data_type = AW_DSP_16_DATA;
 
-	aw_pa->noise_desc.dsp_reg = AW_PID_2049_DSP_REG_CFG_MBMEC_GLBCFG;
+	aw_pa->noise_desc.dsp_reg = is2066 ?
+			AW_PID_2066_DSP_REG_CFG_MBMEC_GLBCFG : AW_PID_2049_DSP_REG_CFG_MBMEC_GLBCFG;
 	aw_pa->noise_desc.data_type = AW_DSP_16_DATA;
 	aw_pa->noise_desc.mask = AW_PID_2049_DSP_REG_NOISE_MASK;
 
-	aw_pa->f0_desc.dsp_reg = AW_PID_2049_DSP_REG_RESULT_F0;
+	/* cal/monitor-only (RESULT_F0); 0x2066 value confirmed from vendor reg.h */
+	aw_pa->f0_desc.dsp_reg = is2066 ?
+			AW_PID_2066_DSP_REG_RESULT_F0 : AW_PID_2049_DSP_REG_RESULT_F0;
 	aw_pa->f0_desc.shift = AW_PID_2049_DSP_F0_SHIFT;
 	aw_pa->f0_desc.data_type = AW_DSP_16_DATA;
 
 	/*32-bit data types need bypass dsp*/
+	/* 0x2066 has no CFGF0_FS DSP register (Awinic's 0x2066 driver drops
+	 * this legacy write; see aw_pid_2049_set_cfg_f0_fs which skips it on
+	 * 0x2066). Keep the 0x2049 address here as an inert placeholder; it is
+	 * never read/written on 0x2066. */
 	aw_pa->cfgf0_fs_desc.dsp_reg = AW_PID_2049_DSP_REG_CFGF0_FS;
 	aw_pa->cfgf0_fs_desc.data_type = AW_DSP_32_DATA;
 
-	aw_pa->q_desc.dsp_reg = AW_PID_2049_DSP_REG_RESULT_Q;
+	/* cal/monitor-only (RESULT_Q); 0x2066 value confirmed from vendor reg.h */
+	aw_pa->q_desc.dsp_reg = is2066 ?
+			AW_PID_2066_DSP_REG_RESULT_Q : AW_PID_2049_DSP_REG_RESULT_Q;
 	aw_pa->q_desc.shift = AW_PID_2049_DSP_Q_SHIFT;
 	aw_pa->q_desc.data_type = AW_DSP_16_DATA;
 
 	/*32-bit data types need bypass dsp*/
+	/* 0x2066 uses a hardware CRC engine (CRCCTRL 0x4B), not a DSP-memory
+	 * CRC address; Awinic's 0x2066 driver sets crc_type = HW_CRC and does
+	 * NOT run this SW DSP-CRC. aw_dev_dsp_crc32_check() is skipped on
+	 * 0x2066 (see aw_device.c), so this 0x2049 address stays inert. */
 	aw_pa->dsp_crc_desc.dsp_reg = AW_PID_2049_DSP_REG_CRC_ADDR;
 	aw_pa->dsp_crc_desc.data_type = AW_DSP_32_DATA;
 
@@ -586,8 +648,9 @@ static int aw883xx_dev_init(struct aw883xx *aw883xx)
 	aw_pa->cco_mux_desc.divider = AW_PID_2049_CCO_MUX_DIVIDED_VALUE;
 	aw_pa->cco_mux_desc.bypass = AW_PID_2049_CCO_MUX_BYPASS_VALUE;
 
-	/*hw monitor temp reg*/
-	aw_pa->hw_temp_desc.dsp_reg = AW_PID_2049_DSP_REG_TEMP_ADDR;
+	/*hw monitor temp reg (monitor-only; 0x2066 value from vendor reg.h)*/
+	aw_pa->hw_temp_desc.dsp_reg = is2066 ?
+			AW_PID_2066_DSP_REG_TEMP_ADDR : AW_PID_2049_DSP_REG_TEMP_ADDR;
 	aw_pa->hw_temp_desc.data_type = AW_DSP_16_DATA;
 
 	aw_pa->chansel_desc.rxchan_reg = AW_PID_2049_I2SCTRL_REG;
@@ -603,13 +666,19 @@ static int aw883xx_dev_init(struct aw883xx *aw883xx)
 	aw_pa->tx_en_desc.tx_en_mask = AW_PID_2049_I2STXEN_MASK;
 	aw_pa->tx_en_desc.tx_disable = AW_PID_2049_I2STXEN_DISABLE_VALUE;
 
-	aw_pa->cali_delay_desc.dsp_reg = AW_PID_2049_DSP_CALI_F0_DELAY;
+	aw_pa->cali_delay_desc.dsp_reg = is2066 ?
+			AW_PID_2066_DSP_CALI_F0_DELAY : AW_PID_2049_DSP_CALI_F0_DELAY;
 	aw_pa->cali_delay_desc.data_type = AW_DSP_16_DATA;
 
-	aw_pa->dsp_st_desc.dsp_reg_s1 = AW_PID_2049_DSP_ST_S1;
-	aw_pa->dsp_st_desc.dsp_reg_e1 = AW_PID_2049_DSP_ST_E1;
-	aw_pa->dsp_st_desc.dsp_reg_s2 = AW_PID_2049_DSP_ST_S2;
-	aw_pa->dsp_st_desc.dsp_reg_e2 = AW_PID_2049_DSP_ST_E2;
+	/* diagnostic DSP-status ranges (log only); 0x2066 from vendor reg.h */
+	aw_pa->dsp_st_desc.dsp_reg_s1 = is2066 ?
+			AW_PID_2066_DSP_ST_S1 : AW_PID_2049_DSP_ST_S1;
+	aw_pa->dsp_st_desc.dsp_reg_e1 = is2066 ?
+			AW_PID_2066_DSP_ST_E1 : AW_PID_2049_DSP_ST_E1;
+	aw_pa->dsp_st_desc.dsp_reg_s2 = is2066 ?
+			AW_PID_2066_DSP_ST_S2 : AW_PID_2049_DSP_ST_S2;
+	aw_pa->dsp_st_desc.dsp_reg_e2 = is2066 ?
+			AW_PID_2066_DSP_ST_E2 : AW_PID_2049_DSP_ST_E2;
 
 	aw_device_probe(aw_pa);
 
@@ -620,7 +689,8 @@ static int aw883xx_dev_init(struct aw883xx *aw883xx)
 
 int aw883xx_init(struct aw883xx *aw883xx)
 {
-	if (aw883xx->chip_id == AW883XX_PID_2049) {
+	if (aw883xx->chip_id == AW883XX_PID_2049 ||
+		aw883xx->chip_id == AW883XX_PID_2066) {
 		return aw883xx_dev_init(aw883xx);
 	} else {
 		aw_dev_err(aw883xx->dev, "unsupported device");

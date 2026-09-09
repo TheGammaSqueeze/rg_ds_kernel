@@ -93,6 +93,7 @@
  *******************************************/
 enum aw883xx_id {
 	AW883XX_PID_2049 = 0x2049,
+	AW883XX_PID_2066 = 0x2066,	/* AW88166 (RG DS Plus speakers) - uses the 2049 op-set */
 };
 
 #define AW_PID_2049_REG_MAX				(0x7D)
@@ -2377,5 +2378,47 @@ static const unsigned char aw_pid_2049_reg_access[AW_PID_2049_REG_MAX] = {
 #define AW_PID_2049_DSP_ST_E1				(0x83FD)
 #define AW_PID_2049_DSP_ST_S2				(0x9C00)
 #define AW_PID_2049_DSP_ST_E2				(0x9C5D)
+
+/********************************************
+ * AW88166 (chip_id 0x2066) DSP memory map
+ *
+ * The AW88166 places the DSP FW/CFG RAM windows and every DSP-config
+ * descriptor at different addresses to the AW88159 (0x2049). Loading the
+ * ACF firmware/config to the 0x2049 windows leaves the 0x2066 DSP with no
+ * valid image, so it never runs, the watchdog (reg 0x42) stays 0 and PA
+ * start fails (silence). Every value below is taken verbatim from Awinic's
+ * own aw883xx_pid_2066_reg.h / aw883xx_pid_2066_init.c and cross-checked
+ * against the mainline aw88166.h and the stock aw_dev_pid_2066_init.
+ *******************************************/
+#define AW_PID_2066_DSP_CFG_ADDR			(0x9B00)
+#define AW_PID_2066_DSP_FW_ADDR				(0x8980)
+
+#define AW_PID_2066_DSP_REG_VMAX			(0x9B12)
+
+#define AW_PID_2066_DSP_REG_CFG_MBMEC_GLBCFG		(0x9B4A)
+#define AW_PID_2066_DSP_REG_CFG_MBMEC_ACTAMPTH		(0x9B4C)/*32bit*/
+#define AW_PID_2066_DSP_REG_CFG_MBMEC_NOISEAMPTH	(0x9B4E)/*32bit*/
+
+#define AW_PID_2066_DSP_REG_CFG_ADPZ_RA			(0x9B68)/*32bit*/
+#define AW_PID_2066_DSP_REG_CFG_ADPZ_USTEPN		(0x9B6E)
+#define AW_PID_2066_DSP_REG_CFG_RE_ALPHA		(0x9BD4)
+#define AW_PID_2066_DSP_CALI_F0_DELAY			(0x9B63)
+
+/* cal/monitor-only descriptors (calibration + hw-monitor are disabled on
+ * this device); addresses confirmed from Awinic's aw883xx_pid_2066_reg.h */
+#define AW_PID_2066_DSP_REG_CFG_ADPZ_RE			(0x814B)/*32bit*/
+#define AW_PID_2066_DSP_REG_RESULT_F0			(0x8142)
+#define AW_PID_2066_DSP_REG_RESULT_Q			(0x8144)
+#define AW_PID_2066_DSP_REG_CALRE			(0x8145)
+#define AW_PID_2066_DSP_REG_TEMP_ADDR			(0x8149)
+
+/* DSPVCALB on 0x2066 is a PLAIN I2C register (0x4A), NOT DSP memory */
+#define AW_PID_2066_DSPVCALB_REG			(0x004A)
+
+/* DSP status ranges (diagnostic logging only, not on the start path) */
+#define AW_PID_2066_DSP_ST_S1				(0x9500)
+#define AW_PID_2066_DSP_ST_E1				(0x9A12)
+#define AW_PID_2066_DSP_ST_S2				(0x8104)
+#define AW_PID_2066_DSP_ST_E2				(0x8368)
 
 #endif  /* #ifndef  __AW_PID_2049_REG_H__ */

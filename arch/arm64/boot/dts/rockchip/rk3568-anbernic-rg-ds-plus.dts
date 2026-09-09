@@ -316,6 +316,9 @@
  * sustained high-temperature use can shorten GPU lifetime (rk3568.dtsi note).
  * ====================================================================== */
 &cpu0_opp_table {
+	/* 2160MHz OC - matches the attached RG DS (72ece runs 2160/900). The RK3568
+	 * armclk PLL is ATF-owned via SCMI; the Plus u-boot ATF must carry the 2160
+	 * rate entry (the RG DS shipped u-boot already does; ours needs it). */
 	opp-2160000000 {
 		opp-supported-hw = <0xf9 0xffff>;
 		opp-hz = /bits/ 64 <2160000000>;
@@ -326,7 +329,10 @@
 
 &gpu_opp_table {
 	opp-900000000 {
-		opp-supported-hw = <0x06 0xffff>;
+		/* 0xf9 matches this silicon's PVTM bin (RG DS OC proven); the old
+		 * 0x06 mask excluded our bin so the 900MHz OPP was disabled and the
+		 * GPU capped at 800MHz. GPU OC is DT-only (ATF already allows <=1200). */
+		opp-supported-hw = <0xf9 0xffff>;
 		opp-hz = /bits/ 64 <900000000>;
 		opp-microvolt = <1050000 1050000 1050000>;
 	};

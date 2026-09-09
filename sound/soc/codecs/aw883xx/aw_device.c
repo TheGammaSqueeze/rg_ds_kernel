@@ -22,6 +22,7 @@
 #include "aw_device.h"
 #include "aw_bin_parse.h"
 #include "aw_calib.h"
+#include "aw_pid_2049_reg.h"	/* enum aw883xx_id: AW883XX_PID_2066 */
 
 #define AW_DEV_SYSST_CHECK_MAX   (10)
 
@@ -500,11 +501,29 @@ static int aw_dev_set_vcalb(struct aw_device *aw_dev)
 	struct aw_vcalb_desc *desc = &aw_dev->vcalb_desc;
 	uint32_t vcalb_adj;
 	int vsense_select = -1;
+	/*
+	 * AW88166 (0x2066): DSPVCALB is a plain I2C register (0x4A), not DSP
+	 * memory. Read/write it via the plain reg ops, and do NOT patch the
+	 * ACF cfg buffer for it. The vcalb compute formula is identical to
+	 * 0x2049. Mirrors Awinic's aw_pid_2066_set_vcalb / mainline aw88166.
+	 */
+	bool is2066 = (aw_dev->chip_id == AW883XX_PID_2066);
 
-	ret = aw_dev->ops.aw_dsp_read(aw_dev, desc->vcalb_dsp_reg, &vcalb_adj, desc->data_type);
-	if (ret < 0) {
-		aw_dev_err(aw_dev->dev, "read vcalb_adj failed");
-		return ret;
+	if (is2066) {
+		uint16_t vcalb_reg_val = 0;
+
+		ret = aw_dev->ops.aw_reg_read(aw_dev, desc->vcalb_dsp_reg, &vcalb_reg_val);
+		if (ret < 0) {
+			aw_dev_err(aw_dev->dev, "read vcalb_adj failed");
+			return ret;
+		}
+		vcalb_adj = vcalb_reg_val;
+	} else {
+		ret = aw_dev->ops.aw_dsp_read(aw_dev, desc->vcalb_dsp_reg, &vcalb_adj, desc->data_type);
+		if (ret < 0) {
+			aw_dev_err(aw_dev->dev, "read vcalb_adj failed");
+			return ret;
+		}
 	}
 
 	ret = aw_dev_vsense_select(aw_dev, &vsense_select);
@@ -547,6 +566,22 @@ static int aw_dev_set_vcalb(struct aw_device *aw_dev)
 	reg_val = (uint32_t)vcalb;
 
 	aw_dev_dbg(aw_dev->dev, "vcalb=%d, reg_val=0x%x, vcalb_adj =0x%x", vcalb, reg_val, vcalb_adj);
+
+	if (is2066) {
+		/*
+		 * 0x2066: write the computed vcalb back to the plain DSPVCALB
+		 * register (0x4A). There is no ACF cfg entry to patch, so skip
+		 * aw_dev_modify_dsp_cfg (it would underflow the cfg-base offset
+		 * math and fail the bounds check).
+		 */
+		ret = aw_dev->ops.aw_reg_write(aw_dev, desc->vcalb_dsp_reg, (uint16_t)reg_val);
+		if (ret < 0) {
+			aw_dev_err(aw_dev->dev, "write vcalb failed");
+			return ret;
+		}
+		aw_dev_info(aw_dev->dev, "done");
+		return ret;
+	}
 
 	ret = aw_dev->ops.aw_dsp_write(aw_dev, desc->vcalb_dsp_reg, reg_val, desc->data_type);
 	if (ret < 0) {
@@ -1381,7 +1416,15 @@ int aw_device_start(struct aw_device *aw_dev)
 
 		aw_dev_cali_re_update(&aw_dev->cali_desc);
 
-		if (aw_dev->dsp_crc_st != AW_DSP_CRC_OK) {
+		/*
+		 * AW88166 (0x2066) validates the DSP image with its hardware CRC
+		 * engine (CRCCTRL 0x4B), not the 0x2049 SW DSP-memory CRC. Awinic's
+		 * 0x2066 driver sets crc_type = HW_CRC and never runs this SW check.
+		 * The 0x2049 CRC address is in the wrong DSP window on 0x2066, so
+		 * running it here would always fail. Skip it for 0x2066.
+		 */
+		if (aw_dev->chip_id != AW883XX_PID_2066 &&
+			aw_dev->dsp_crc_st != AW_DSP_CRC_OK) {
 			ret = aw_dev_dsp_crc32_check(aw_dev);
 			if (ret < 0) {
 				aw_dev_err(aw_dev->dev, "dsp crc check failed");

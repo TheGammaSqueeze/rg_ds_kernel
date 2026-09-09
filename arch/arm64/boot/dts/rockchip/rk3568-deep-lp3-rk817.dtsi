@@ -425,7 +425,12 @@
 	aw883xx_sound: aw883x-sound {
 		status = "okay";
 		compatible = "rockchip,multicodecs-card";
-		rockchip,card-name = "rockchipaw883xx";
+		/* Must be exactly "rockchipaw882xx": the RK primary audio HAL selects the
+		 * speaker PCM card by scanning /proc/asound/cardN/id for its SPEAKER_OUT_NAME
+		 * token list, which contains "rockchipaw882xx" (not 883). Without the match
+		 * out->card stays -1 and speaker pcm_open never runs (-EINVAL, silent). The
+		 * amps are still AW88166; only the ASoC card *name* the HAL looks for. */
+		rockchip,card-name = "rockchipaw882xx";
 		rockchip,format = "i2s";
 		rockchip,mclk-fs = <256>;
 		rockchip,cpu = <&i2s3_2ch>;
@@ -524,8 +529,8 @@
 		pinctrl-0 = <&uart1m1_rtsn>;
 		pinctrl-1 = <&uart1_gpios>;
 		BT,reset_gpio    = <&gpio0 RK_PD5 GPIO_ACTIVE_HIGH>;
-		//BT,wake_gpio     = <&gpio0 RK_PD3 GPIO_ACTIVE_HIGH>;
-		//BT,wake_host_irq = <&gpio0 RK_PD4 GPIO_ACTIVE_HIGH>;
+		BT,wake_gpio     = <&gpio0 RK_PD3 GPIO_ACTIVE_HIGH>;
+		BT,wake_host_irq = <&gpio0 RK_PD4 GPIO_ACTIVE_HIGH>;
 		status = "okay";
 		//status = "disabled";
 	};
@@ -667,6 +672,11 @@
 	assigned-clocks = <&cru DCLK_VOP0>, <&cru DCLK_VOP1>;
 	assigned-clock-parents = <&pmucru PLL_HPLL>, <&cru PLL_VPLL>;
 	vop-supply = <&vdd_logic>;
+	/* Low-latency dual-screen: sync VP0(DSI0 top)+VP1(DSI1 bottom) scanout
+	 * start (vop2_crtc_sync) so the two 1024x768 panels are phase-aligned,
+	 * removing the inter-screen offset / secondary-panel drain lag.
+	 * bit0=VP0, bit1=VP1 -> 0x3 = both. */
+	rockchip,sync-vp-mask = /bits/ 8 <3>;
 };
 
 &vop_mmu {
@@ -1100,7 +1110,7 @@
 	i2c-scl-falling-time-ns = <4>;
 
 	aw883xx1:aw883xx_smartpa@34 {
-		compatible = "awinic,aw88166";
+		compatible = "awinic,aw883xx_smartpa";
 		#sound-dai-cells = <0>;
 		reg = <0x34>;
 		reset-gpio= <&gpio4 RK_PA7 0>; 
@@ -1111,7 +1121,6 @@
 		re-min = <1000>;
 		re-max = <40000>;
 		sound-channel = <0>;
-		awinic,audio-channel = <0>;
 		sound-name-prefix = "Left";
 		
 		clocks = <&cru I2S3_MCLKOUT_TX>;
@@ -1123,7 +1132,7 @@
 	};
 
 	aw883xx2:aw883xx_smartpa@35 {
-		compatible = "awinic,aw88166";
+		compatible = "awinic,aw883xx_smartpa";
 		#sound-dai-cells = <0>;
 		reg = <0x35>;
 		reset-gpio= <&gpio4 RK_PB2 0>; 
@@ -1134,7 +1143,6 @@
 		re-min = <1000>; 
 		re-max = <40000>;
 		sound-channel = <1>;
-		awinic,audio-channel = <1>;
 		sound-name-prefix = "Right";
 		clocks = <&cru I2S3_MCLKOUT_TX>;
 		clock-names = "mclk";
