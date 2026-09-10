@@ -327,13 +327,19 @@
 	};
 };
 
-&gpu_opp_table {
-	opp-900000000 {
-		/* 0xf9 matches this silicon's PVTM bin (RG DS OC proven); the old
-		 * 0x06 mask excluded our bin so the 900MHz OPP was disabled and the
-		 * GPU capped at 800MHz. GPU OC is DT-only (ATF already allows <=1200). */
-		opp-supported-hw = <0xf9 0xffff>;
-		opp-hz = /bits/ 64 <900000000>;
-		opp-microvolt = <1050000 1050000 1050000>;
-	};
-};
+/* GPU: capped at the real 800MHz ceiling (no 900 OPP override).
+ *
+ * A 900MHz GPU OPP was investigated and REJECTED on hard evidence. Adding the
+ * opp-900000000 entry (with rockchip,max-volt=1.2V + AVS so it registers) makes
+ * available_frequencies list 900 and devfreq report cur_freq=900, but a gpubench
+ * fill-rate benchmark proves the GPU actually runs ~594MHz (GPLL/2) at that
+ * setting - i.e. SLOWER than 800 (800 = 2400 Mpix/s, "900" = 1990 Mpix/s,
+ * thermally controlled, reproduced on both this Plus AND the shipped RG DS). The
+ * ATF (BL31) owns clk_scmi_gpu and synthesizes the GPU clock from a PVTPLL ring
+ * oscillator; the ring length bottoms out at 0xd3 (shared by the 700/800/900 ATF
+ * rate entries), so at this silicon's voltage bin the ring cannot clock past
+ * ~800MHz and ATF deliberately falls back to the GPLL/2 divider (594) rather than
+ * over-drive the ring. 800MHz is already Rockchip "overdrive" for the Mali-G52
+ * (see rk356x.dtsi note); real 900 is beyond the part's rated/calibrated range.
+ * The base rk356x.dtsi 800MHz OPP is the true achievable maximum, so no override
+ * is needed here. */
