@@ -805,13 +805,32 @@ static void joypad_gpio_check(struct joypad *joypad)
 				/* D-pad reported as an ABS_HAT axis: two opposing
 				 * buttons share one code, so the DT linux,abs-value
 				 * encodes the direction (2 => negative, 1 =>
-				 * positive). Emit the signed value on press, 0 on
-				 * release. */
-				if (value == gpio->active_level)
+				 * positive). Emit the signed value on press. On
+				 * release report the OPPOSITE button's current
+				 * state rather than 0: a quick left-to-right switch
+				 * overlaps the two presses, and reporting 0 for the
+				 * old direction's release cancelled the new one
+				 * (the game saw the held direction for one frame). */
+				if (value == gpio->active_level) {
 					report = (gpio->abs_value == 2) ?
 							-1 : gpio->abs_value;
-				else
+				} else {
+					int k;
+
 					report = 0;
+					for (k = 0; k < joypad->bt_gpio_count; k++) {
+						struct bt_gpio *o = &joypad->gpios[k];
+
+						if (o == gpio ||
+						    o->report_type != EV_ABS ||
+						    o->linux_code != gpio->linux_code)
+							continue;
+						if (gpio_get_value(o->num) ==
+						    o->active_level)
+							report = (o->abs_value == 2) ?
+								-1 : o->abs_value;
+					}
+				}
 			} else {
 				report = (value == gpio->active_level) ? 1 : 0;
 			}
