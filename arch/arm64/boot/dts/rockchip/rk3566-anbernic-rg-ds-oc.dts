@@ -2818,15 +2818,15 @@
 				native-mode = <0x9d>;
 
 				timing0 {
-					clock-frequency = <0x29020c0>;
+					clock-frequency = <0x28e9a20>;
 					hactive = <0x280>;
 					vactive = <0x1e0>;
 					hsync-len = <0xdc>;
 					hback-porch = <0x104>;
-					hfront-porch = <0x11e>;
+					hfront-porch = <0x136>;
 					vsync-len = <0x02>;
 					vback-porch = <0x10>;
-					vfront-porch = <0x0d>;
+					vfront-porch = <0x02>;
 					hsync-active = <0x00>;
 					vsync-active = <0x00>;
 					de-active = <0x00>;
@@ -2934,15 +2934,15 @@
 				phandle = <0x19c>;
 
 				timing {
-					clock-frequency = <0x29020c0>;
+					clock-frequency = <0x28e9a20>;
 					hactive = <0x280>;
 					vactive = <0x1e0>;
 					hsync-len = <0xdc>;
 					hback-porch = <0x104>;
-					hfront-porch = <0x11e>;
+					hfront-porch = <0x136>;
 					vsync-len = <0x02>;
 					vback-porch = <0x10>;
-					vfront-porch = <0x0d>;
+					vfront-porch = <0x02>;
 					hsync-active = <0x00>;
 					vsync-active = <0x00>;
 					de-active = <0x00>;
