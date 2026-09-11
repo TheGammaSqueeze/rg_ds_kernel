@@ -894,7 +894,10 @@
 			29 00 02 13 0C
 			29 00 02 30 00
 			15 FF 02 11 00
-			15 00 02 36 03
+			/* Vendor set 36 03 (image turned 180 degrees in the panel). Scan the top
+			 * panel exactly like the bottom one, so both paint from the hinge outward
+			 * in the same instant; drastic-nano rotates this panel image in software. */
+			15 00 02 36 00
 			15 FF 02 29 00
 		];
 
