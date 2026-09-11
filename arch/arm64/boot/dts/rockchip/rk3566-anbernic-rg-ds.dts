@@ -535,6 +535,9 @@
 
 			route-dsi1 {
 				status = "okay";
+				/* The top panel is mounted turned 180 degrees and scans like the bottom
+				 * one (page-1 0x37 = 0x09): rotate the logo and charge animation. */
+				logo,rotate = <180>;
 				logo,uboot = "logo.bmp";
 				logo,kernel = "logo_kernel.bmp";
 				logo,mode = "center";
