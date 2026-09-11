@@ -3925,7 +3925,11 @@
 			max-y = <0x1e0>;
 			tp-size = <0x38f>;
 			ext_lcd_tp = <0x01>;
-			flip_report_tp = <0x01>;
+			/* Raw coordinates in the glass's own frame: the top panel's image is turned
+			 * 180 degrees by the framework (persist.gammaos.multidisplay.secondary_rotation)
+			 * and InputReader rotates this digitizer with that display's viewport, so a
+			 * driver-side flip here would correct it twice. */
+			flip_report_tp = <0x00>;
 			com_lcd_tp = <0x00>;
 			pinctrl-names = "default";
 			pinctrl-0 = <0xd8>;
