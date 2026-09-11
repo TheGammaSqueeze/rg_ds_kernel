@@ -969,6 +969,9 @@
 	status = "okay";
 	logo,uboot  = "logo.bmp";
 	logo,kernel = "logo.bmp";
+	/* The top panel is mounted turned 180 degrees and now scans like the bottom
+	 * one (36 00 in its init): rotate the logo and charge animation for it. */
+	logo,rotate = <180>;
 	connect = <&vp1_out_dsi1>;
 };
 &dsi1_in_vp0 {
