@@ -2610,7 +2610,6 @@
 				#address-cells = <0x01>;
 				#size-cells = <0x00>;
 				phandle = <0x194>;
-
 				endpoint@0 {
 					reg = <0x00>;
 					remote-endpoint = <0x8b>;
@@ -2641,7 +2640,6 @@
 				#address-cells = <0x01>;
 				#size-cells = <0x00>;
 				phandle = <0x195>;
-
 				endpoint@0 {
 					reg = <0x00>;
 					remote-endpoint = <0x8f>;
@@ -2820,15 +2818,15 @@
 				native-mode = <0x9d>;
 
 				timing0 {
-					clock-frequency = <0x28e9a20>;
+					clock-frequency = <0x29020c0>;
 					hactive = <0x280>;
 					vactive = <0x1e0>;
 					hsync-len = <0xdc>;
 					hback-porch = <0x104>;
-					hfront-porch = <0x136>;
+					hfront-porch = <0x11e>;
 					vsync-len = <0x02>;
 					vback-porch = <0x10>;
-					vfront-porch = <0x02>;
+					vfront-porch = <0x0d>;
 					hsync-active = <0x00>;
 					vsync-active = <0x00>;
 					de-active = <0x00>;
@@ -2936,15 +2934,15 @@
 				phandle = <0x19c>;
 
 				timing {
-					clock-frequency = <0x28e9a20>;
+					clock-frequency = <0x29020c0>;
 					hactive = <0x280>;
 					vactive = <0x1e0>;
 					hsync-len = <0xdc>;
 					hback-porch = <0x104>;
-					hfront-porch = <0x136>;
+					hfront-porch = <0x11e>;
 					vsync-len = <0x02>;
 					vback-porch = <0x10>;
-					vfront-porch = <0x02>;
+					vfront-porch = <0x0d>;
 					hsync-active = <0x00>;
 					vsync-active = <0x00>;
 					de-active = <0x00>;
