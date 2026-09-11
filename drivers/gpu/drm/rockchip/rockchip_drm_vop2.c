@@ -1155,6 +1155,9 @@ struct vop2 {
 	struct list_head pd_list_head;
 	struct work_struct post_buf_empty_work;
 	struct workqueue_struct *workqueue;
+	struct delayed_work boot_sync_work;
+	bool boot_sync_done;
+	int boot_sync_tries;
 
 	struct vop2_layer layers[ROCKCHIP_MAX_LAYER];
 
@@ -1952,6 +1955,49 @@ static uint32_t vop2_read_vcnt(struct vop2_video_port *vp)
 	}
 
 	return vcnt1;
+}
+
+static int vop2_crtc_sync(struct drm_crtc *crtc, unsigned long crtc_mask);
+
+/*
+ * When u-boot lights both DSI panels, the kernel inherits them via
+ * loader_protect and vop2_crtc_output_post_enable() - the normal trigger for
+ * vop2_crtc_sync() - never runs, so the two video ports free-run phase-offset
+ * from each other (measured ~99 scanlines apart on the dual-screen RG DS).
+ * Once both sync_vp_mask ports are active, fire vop2_crtc_sync() once to align
+ * their scanout (verified to drive the inter-VP delta to 0 and hold). Gated by
+ * sync_vp_mask, which only the dual-DSI RG DS device tree sets, so this is a
+ * no-op on every other board. Bounded poll so it gives up if the second port
+ * never comes up.
+ */
+static void vop2_boot_sync_fn(struct work_struct *work)
+{
+	struct vop2 *vop2 = container_of(work, struct vop2, boot_sync_work.work);
+
+	if (!vop2->sync_vp_mask)
+		return;
+
+	if (vop2->boot_sync_done)
+		return;
+
+	if ((vop2->active_vp_mask & vop2->sync_vp_mask) == vop2->sync_vp_mask &&
+	    pm_runtime_get_if_in_use(vop2->dev) > 0) {
+		int vp0 = __ffs(vop2->sync_vp_mask);
+
+		vop2_crtc_sync(&vop2->vps[vp0].rockchip_crtc.crtc, vop2->sync_vp_mask);
+		vop2->boot_sync_done = true;
+		pm_runtime_put(vop2->dev);
+		pr_info("vop2: applied boot dual-VP scanout sync (mask 0x%x)\n",
+			vop2->sync_vp_mask);
+		return;
+	}
+
+	/*
+	 * Give up after ~30s rather than poll forever, in case the second port
+	 * never comes up on a board that does set sync-vp-mask.
+	 */
+	if (++vop2->boot_sync_tries < 60)
+		schedule_delayed_work(&vop2->boot_sync_work, msecs_to_jiffies(500));
 }
 
 static void vop2_wait_for_irq_handler(struct drm_crtc *crtc)
@@ -19946,6 +19992,10 @@ static int vop2_bind(struct device *dev, struct device *master, void *data)
 		vop2->workqueue = create_workqueue("post_buf_empty_wq");
 		INIT_WORK(&vop2->post_buf_empty_work, post_buf_empty_work_event);
 	}
+
+	INIT_DELAYED_WORK(&vop2->boot_sync_work, vop2_boot_sync_fn);
+	if (vop2->sync_vp_mask)
+		schedule_delayed_work(&vop2->boot_sync_work, msecs_to_jiffies(1000));
 
 	vop2_dovi_data_init(vop2);
 	vop2_dsc_data_init(vop2);
