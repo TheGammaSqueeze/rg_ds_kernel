@@ -696,16 +696,6 @@
 			opp-microvolt-L3 = <0xdbba0 0xdbba0 0x106738>;
 		};
 
-		opp-900000000 {
-			opp-supported-hw = <0xf9 0xffff>;
-			opp-hz = <0x00 0x35a4e900>;
-			opp-microvolt = <0x100590 0x100590 0x100590>;
-			opp-microvolt-L0 = <0x100590 0x100590 0x100590>;
-			opp-microvolt-L1 = <0xf4240 0xf4240 0x100590>;
-			opp-microvolt-L2 = <0xee098 0xee098 0x100590>;
-			opp-microvolt-L3 = <0xe7ef0 0xe7ef0 0x100590>;
-		};
-
 		opp-j-600000000 {
 			opp-supported-hw = <0x04 0xffff>;
 			opp-hz = <0x00 0x23c34600>;
