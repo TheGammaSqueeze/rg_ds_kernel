@@ -689,6 +689,14 @@ static void rk817_charge_ilimit_enable(struct rk817_charger *charge)
 static void rk817_charge_set_input_current(struct rk817_charger *charge,
 					   int input_current)
 {
+	/* The RK817 reloads CHRG_IN (0xE5) with its power-on defaults (4.4V
+	 * input regulation, 450mA) whenever VBUS is removed. Only the current
+	 * limit used to be re-applied on the next plug, so the DT
+	 * min_input_voltage was silently lost after the first unplug (seen on
+	 * the RG DS Plus: register back to 0xC8 at every removal). Re-apply the
+	 * voltage threshold together with every current limit change. */
+	rk817_charge_set_input_voltage(charge, charge->min_input_voltage);
+
 	if (input_current < 80 || input_current > 3000)
 		dev_err(charge->dev, "the input current is error.\n");
 

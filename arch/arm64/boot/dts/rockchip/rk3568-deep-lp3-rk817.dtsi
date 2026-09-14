@@ -1012,7 +1012,13 @@
 
 		charger:charger {
 			compatible = "rk817,charger";
-			min_input_voltage = <4500>;
+			/* Input voltage regulation (VINDPM). Measured on the RG DS Plus: the
+			 * VBUS path (cable + connector + board) droops ~0.8V at ~1.7A, so at
+			 * 4500 the RK817 backed off to ~1.3A input (~750mA into the battery)
+			 * from both a 5V/2A brick and a 65W PD brick at 5V. 4200 lets both
+			 * deliver ~1.2-1.3A into the battery; below that the sources are the
+			 * limit. Harmless at the CV tail, where the low current means no droop. */
+			min_input_voltage = <4200>;
 			max_input_current = <3000>;	/* ROCKNIX parity (was 1500); needs a 5V/3A+ charger */
 			max_chrg_current = <3500>;	/* ROCKNIX parity (was 2000); RK817 hardware max */
 			max_chrg_voltage = <4400>;//4350-4.35v
