@@ -71,6 +71,7 @@ extern void led_chargr_status(int charger);
 #define SAMPLE_RES_DIV2		2
 
 #define INPUT_450MA		450
+#define INPUT_900MA		900
 #define INPUT_1500MA	1500
 
 #define CURRENT_TO_ADC(current, samp_res)	\
@@ -808,8 +809,13 @@ static void rk817_charge_set_chrg_param(struct rk817_charger *charge,
 		charge->usb_in = 1;
 		charge->ac_in = 0;
 		charge->prop_status = POWER_SUPPLY_STATUS_CHARGING;
+		/* SDP / no BC1.2 signature. This board has no Type-C CC sensing, so a
+		 * USB-C PD brick in its 5V default mode (D+/D- open) lands here too and
+		 * used to be clamped to 450mA. Take the USB 3 host budget instead: 900mA
+		 * requested, which the RK817 rounds to its 850mA step. Real hosts and
+		 * hubs supply that without tripping; PD sources can supply 1.5A+. */
 		if (charge->dc_in == 0)
-			rk817_charge_set_input_current(charge, INPUT_450MA);
+			rk817_charge_set_input_current(charge, INPUT_900MA);
 		power_supply_changed(charge->usb_psy);
 		power_supply_changed(charge->ac_psy);
 		break;
