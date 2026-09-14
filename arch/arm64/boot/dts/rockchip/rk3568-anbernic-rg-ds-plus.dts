@@ -188,9 +188,9 @@
 		/* Menu -> BTN_MODE (guide) */
 		sw19 { gpios = <&gpio2 RK_PD1 GPIO_ACTIVE_LOW>; label = "GPIO BTN-MODE"; linux,code = <BTN_MODE>; };
 
-		/* Volume keys (Plus-only, wired as GPIO buttons on gpio3 PA1/PA2) */
-		sw20 { gpios = <&gpio3 RK_PA1 GPIO_ACTIVE_LOW>; label = "GPIO KEY-VOLUMEUP";   linux,code = <KEY_VOLUMEUP>;   };
-		sw21 { gpios = <&gpio3 RK_PA2 GPIO_ACTIVE_LOW>; label = "GPIO KEY-VOLUMEDOWN"; linux,code = <KEY_VOLUMEDOWN>; };
+		/* Volume keys live in the gpio-keys node below, exactly like the RG DS
+		 * (see section 4): drastic-nano only opens evdev nodes that carry keys,
+		 * so the hall lid switch must share a node with them to be seen. */
 	};
 };
 
@@ -224,18 +224,35 @@
 	};
 };
 
-/* -------- 4. Hall lid switch as gpio-keys (SW_LID) --------
- * anbernic,misc had hall_key on gpio0 PC3 (base 289) with no driver.  Expose a
- * standard gpio-keys switch reporting SW_LID + wakeup, like the RG DS lid.
- * pinctrl gpio_hall (base 1342-1344) already covers PC3.  Driver:
- * drivers/input/keyboard/gpio_keys.c (CONFIG_KEYBOARD_GPIO, set).
- * POLARITY is a hardware unknown (see device_todo): using ACTIVE_LOW to match
- * the device-proven RG DS lid semantics. */
+/* -------- 4. gpio-keys: volume keys + hall lid switch, laid out like the RG DS --------
+ * The RG DS has ONE "gpio-keys" node holding vol-up-key, vol-down-key and hall-lid
+ * (SW_LID, wakeup). The Plus wires the same three signals (gpio3 PA1/PA2 volume,
+ * gpio0 PC3 hall) so it gets the identical node. This matters beyond tidiness:
+ * drastic-nano admits an evdev node only if it reports gamepad/volume/power keys,
+ * so a hall switch on its own node (the previous "gpio-keys-hall") was never opened
+ * and closing the lid in a game did nothing; on one shared node the SW_LID event
+ * arrives on the same fd as the volume keys, as it does on the RG DS.
+ * anbernic,misc had hall_key on gpio0 PC3 with no driver. Driver:
+ * drivers/input/keyboard/gpio_keys.c (CONFIG_KEYBOARD_GPIO, set). POLARITY of the
+ * hall line is a hardware unknown (see device_todo): ACTIVE_LOW matches the
+ * device-proven RG DS lid semantics. */
 / {
-	gpio_keys_hall: gpio-keys-hall {
+	gpio_keys: gpio-keys {
 		compatible = "gpio-keys";
 		pinctrl-names = "default";
-		pinctrl-0 = <&gpio_hall>;
+		pinctrl-0 = <&vol_keys_gpio &gpio_hall>;
+
+		vol-up-key {
+			gpios = <&gpio3 RK_PA1 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+			label = "volume up";
+		};
+
+		vol-down-key {
+			gpios = <&gpio3 RK_PA2 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEDOWN>;
+			label = "volume down";
+		};
 
 		hall-lid {
 			label = "lid-switch";
@@ -244,6 +261,17 @@
 			linux,code = <SW_LID>;
 			wakeup-source;
 			debounce-interval = <20>;
+		};
+	};
+};
+
+/* Volume key pads as plain pulled-up GPIOs (the RG DS "keys/pwr-key" pinconf). */
+&pinctrl {
+	vol_keys {
+		vol_keys_gpio: vol-keys-gpio {
+			rockchip,pins =
+				<3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PA2 RK_FUNC_GPIO &pcfg_pull_up>;
 		};
 	};
 };
