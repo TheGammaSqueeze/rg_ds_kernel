@@ -2266,9 +2266,32 @@ static void dw_mci_tasklet_func(struct tasklet_struct *t)
 				dw_mci_stop_dma(host);
 				state = STATE_DATA_ERROR;
 				if (host->dir_status == DW_MCI_SEND_STATUS) {
+					/*
+					 * Write data error: the controller may never raise
+					 * transfer-complete, so don't wait in DATA_ERROR.
+					 * But send_stop_abort() above made host->cmd the
+					 * CMD12 abort, which is still running on the
+					 * controller. Ending the request here left the
+					 * driver IDLE with CMD12 in flight; the next request
+					 * then went to a busy controller and never completed
+					 * (dw_mci_request_end WARN, endless IRQs, all SD I/O
+					 * hung). Wait for the abort in SENDING_STOP, which
+					 * resets the controller and ends the request with the
+					 * error so the block layer retries it. With no abort
+					 * in flight, reset before ending.
+					 */
+					dev_warn_ratelimited(host->dev,
+						"write data error, status 0x%08x, %s\n",
+						host->data_status,
+						host->cmd ? "waiting for abort" : "resetting");
 					data->bytes_xfered = 0;
 					data->error = -ETIMEDOUT;
 					host->data = NULL;
+					if (host->cmd) {
+						state = STATE_SENDING_STOP;
+						break;
+					}
+					dw_mci_reset(host);
 					dw_mci_request_end(host, mrq);
 					goto unlock;
 				}
@@ -2387,8 +2410,9 @@ static void dw_mci_tasklet_func(struct tasklet_struct *t)
 			if (!dw_mci_clear_pending_cmd_complete(host))
 				break;
 
-			/* CMD error in data command */
-			if (mrq->cmd->error && mrq->data)
+			/* CMD error in data command, or a write data error that
+			 * came here to let its CMD12 abort finish */
+			if (mrq->data && (mrq->cmd->error || mrq->data->error))
 				dw_mci_reset(host);
 
 			dw_mci_stop_fault_timer(host);
