@@ -23,6 +23,14 @@
 
 static struct dma_heap *sys_heap;
 static struct dma_heap *sys_uncached_heap;
+/*
+ * Rockchip gralloc and the Rockchip Codec2 components ask for "system-dma32" /
+ * "system-uncached-dma32" when a buffer must sit below 4GB (e.g. decoder output on
+ * RK3568). Without these heaps every hardware video decode on such a SoC fails at
+ * the first output buffer. Same ops as the plain heaps, pages from ZONE_DMA32.
+ */
+static struct dma_heap *sys_dma32_heap;
+static struct dma_heap *sys_uncached_dma32_heap;
 
 struct system_heap_buffer {
 	struct dma_heap *heap;
@@ -438,7 +446,8 @@ static const struct dma_buf_ops system_heap_buf_ops = {
 };
 
 static struct page *alloc_largest_available(unsigned long size,
-					    unsigned int max_order)
+					    unsigned int max_order,
+					    bool dma32)
 {
 	struct page *page;
 	int i;
@@ -449,7 +458,11 @@ static struct page *alloc_largest_available(unsigned long size,
 		if (max_order < orders[i])
 			continue;
 
-		page = alloc_pages(order_flags[i], orders[i]);
+		/* __GFP_HIGHMEM and GFP_DMA32 are both zone modifiers; drop the
+		 * former for the below-4GB heaps. */
+		page = alloc_pages(dma32 ? ((order_flags[i] & ~__GFP_HIGHMEM) |
+					    GFP_DMA32) : order_flags[i],
+				   orders[i]);
 		if (!page)
 			continue;
 		return page;
@@ -463,6 +476,7 @@ static struct dma_buf *system_heap_do_allocate(struct dma_heap *heap,
 					       unsigned long heap_flags,
 					       bool uncached)
 {
+	bool dma32 = heap == sys_dma32_heap || heap == sys_uncached_dma32_heap;
 	struct system_heap_buffer *buffer;
 	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
 	unsigned long size_remaining = len;
@@ -496,7 +510,7 @@ static struct dma_buf *system_heap_do_allocate(struct dma_heap *heap,
 			goto free_buffer;
 		}
 
-		page = alloc_largest_available(size_remaining, max_order);
+		page = alloc_largest_available(size_remaining, max_order, dma32);
 		if (!page)
 			goto free_buffer;
 
@@ -611,6 +625,25 @@ static int system_heap_create(void)
 		return PTR_ERR(sys_uncached_heap);
 
 	dma_coerce_mask_and_coherent(dma_heap_get_dev(sys_uncached_heap), DMA_BIT_MASK(64));
+
+	exp_info.name = "system-dma32";
+	exp_info.ops = &system_heap_ops;
+	exp_info.priv = NULL;
+
+	sys_dma32_heap = dma_heap_add(&exp_info);
+	if (IS_ERR(sys_dma32_heap))
+		return PTR_ERR(sys_dma32_heap);
+
+	exp_info.name = "system-uncached-dma32";
+	exp_info.ops = &system_uncached_heap_ops;
+	exp_info.priv = NULL;
+
+	sys_uncached_dma32_heap = dma_heap_add(&exp_info);
+	if (IS_ERR(sys_uncached_dma32_heap))
+		return PTR_ERR(sys_uncached_dma32_heap);
+
+	dma_coerce_mask_and_coherent(dma_heap_get_dev(sys_uncached_dma32_heap),
+				     DMA_BIT_MASK(32));
 	mb(); /* make sure we only set allocate after dma_mask is set */
 	system_uncached_heap_ops.allocate = system_uncached_heap_allocate;
 
