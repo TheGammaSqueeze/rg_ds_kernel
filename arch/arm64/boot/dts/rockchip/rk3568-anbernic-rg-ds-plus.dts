@@ -134,6 +134,7 @@
 		io-channel-names = "amux_adc";
 		io-channels = <&saradc 3>;
 		amux-count = <4>;
+		joypad-no-right-stick;
 		amux-a-gpios  = <&gpio3 RK_PC2 GPIO_ACTIVE_LOW>;
 		amux-b-gpios  = <&gpio3 RK_PC3 GPIO_ACTIVE_LOW>;
 		amux-en-gpios = <&gpio3 RK_PC1 GPIO_ACTIVE_LOW>;
@@ -181,8 +182,9 @@
 		sw14 { gpios = <&gpio3 RK_PA4 GPIO_ACTIVE_LOW>; label = "GPIO BTN-TL2"; linux,code = <BTN_TL2>; };
 		sw15 { gpios = <&gpio3 RK_PA6 GPIO_ACTIVE_LOW>; label = "GPIO BTN-TR2"; linux,code = <BTN_TR2>; };
 
-		/* Stick clicks */
-		sw16 { gpios = <&gpio2 RK_PD3 GPIO_ACTIVE_LOW>; label = "GPIO BTN-THUMBR"; linux,code = <BTN_THUMBR>; };
+		/* Stick click: the Plus has only a LEFT stick. No THUMBR button and no
+		 * right-stick axes (joypad-no-right-stick below), or the floating
+		 * right-stick ADC channels and PD3 report phantom inputs. */
 		sw17 { gpios = <&gpio2 RK_PD2 GPIO_ACTIVE_LOW>; label = "GPIO BTN-THUMBL"; linux,code = <BTN_THUMBL>; };
 
 		/* Menu -> BTN_MODE (guide) */
