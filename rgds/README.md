@@ -80,3 +80,48 @@ rejected with a `module_layout` version mismatch.
 `mkbootimg.py` / `unpack_bootimg.py` (AOSP, Apache-2.0) and Rockchip's
 `resource_tool` (from `rockchip-linux/rkbin`). They are build helpers only; the
 device tree itself is always compiled from the `.dts` source in this tree.
+
+## Board device trees: labels restored, NOT re-parented (2026-09-16)
+
+`rk3566-anbernic-rg-ds.dts` and `-oc.dts` are decompiles of the shipped DTB. They
+now carry their labels and symbolic references back - 821 labels restored, so a
+clock reads `<&cru 0x63>` instead of `<0x24 0x63>` - which makes them reviewable.
+The tree itself is untouched: same properties, same values, same node order.
+
+### Why they still do not #include the shared base
+
+Re-parenting them onto `rk3566.dtsi` + `rk3568-android.dtsi` was tried and
+REVERTED. It produced a tree with identical properties and values, and the device
+would not boot: no boot logo, u-boot hands off, the kernel starts, brings up the
+secondary CPUs and dies silently. Twice, with two different kernels, which is how
+the kernel was ruled out.
+
+The cause is node ORDER. Including a base necessarily emits the base's nodes in
+the base's order before the board's own, and the resulting tree had 1065 of 1074
+nodes in different positions - starting with `hpll_pinning`, which pins the PLL
+the display clocks come from. Node order is functional: the kernel probes
+platform devices in tree order and u-boot walks nodes in order.
+
+So "inherit from the shared base" and "produce the same tree this device boots"
+are mutually exclusive here. Re-parenting is only viable with a device that can be
+tested and re-tested freely, and with the order dependency understood first -
+find which nodes actually need their position, rather than assuming none do.
+
+### Verifying a device tree change
+
+`rgds/tools/dtbcmp.py` compares two DTBs semantically: every node addressed by
+path, phandle references resolved to their target node (honouring `#clock-cells`
+and friends, so clock indices are not mistaken for references), compared as sets
+AND in order.
+
+    python3 rgds/tools/dtbcmp.py old.dtb new.dtb
+    # -> SEMANTICALLY IDENTICAL (same properties AND same node order)
+
+The order check exists because its absence is what let a reordered tree be flashed
+twice. An earlier version of this tool sorted node paths to tolerate phandle
+renumbering, reported "identical" for the reordered tree, and was believed.
+
+### Known rough edge
+
+Clock and pin constants are still numeric (`<&cru 0x63>` rather than
+`<&cru ACLK_VOP>`). Mapping those to their dt-bindings macros is a further pass.
