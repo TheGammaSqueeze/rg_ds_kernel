@@ -506,10 +506,38 @@
 			clock-latency-ns = <0x9c40>;
 		};
 
+		/* 2160MHz OC, per-bin. Measured 2026-09-16 on 72ece2687e9c7853: the
+		 * rail (SYR827 at i2c 0-0040, VSEL0 = 712.5mV + n * 12.5mV) was walked
+		 * down with the CPU pinned at 2160MHz and the GPU, DMC and VOP pinned
+		 * to their top OPPs, two minutes of four-core md5+sha256 per step with
+		 * every result checked:
+		 *
+		 *   1000 .. 862 mV   all clean, 58-61C
+		 *   850 mV           clean (floor)
+		 *   837 mV           hard reset in under 15s
+		 *
+		 * so 1.20V was 350mV above where this part fails. L2/L3 take 1.075V,
+		 * 225mV of margin; L0/L1 keep the old 1.20V because nothing here has
+		 * been measured on a weak part, and every device runs this same tree.
+		 * The die picks its own column at boot from its PVTM fuse: this unit
+		 * reads 91320 -> L3, the RG DS Plus measured alongside it reads 89650
+		 * -> L2 and fails 37.5mV higher, at 875mV. That the bins ordered the
+		 * two parts the same way the measurements did is the reason to trust
+		 * the split at all - it is still only two units, both upper-bin.
+		 *
+		 * NOTE this OPP only does anything if the bootloader's ATF carries the
+		 * 2160 PLL rate; stock rkbin BL31 does not, and without it the kernel
+		 * reports 2160 while the hardware sits at 1992 (see oc/atf-2160-patch.py
+		 * in the rg_ds_uboot tree).
+		 */
 		opp-2160000000 {
 			opp-supported-hw = <0xf9 0xffff>;
 			opp-hz = <0x00 0x80befc00>;
 			opp-microvolt = <0x124f80 0x124f80 0x124f80>;
+			opp-microvolt-L0 = <0x124f80 0x124f80 0x124f80>;
+			opp-microvolt-L1 = <0x124f80 0x124f80 0x124f80>;
+			opp-microvolt-L2 = <0x106738 0x106738 0x124f80>;
+			opp-microvolt-L3 = <0x106738 0x106738 0x124f80>;
 			clock-latency-ns = <0x9c40>;
 		};
 	};
