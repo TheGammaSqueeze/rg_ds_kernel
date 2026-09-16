@@ -442,7 +442,12 @@
 		rockchip,thermal-zone = "soc-thermal";
 		rockchip,temp-hysteresis = <0x1388>;
 		rockchip,low-temp = <0x00>;
-		rockchip,low-temp-adjust-volt = <0x00 0x7c8 0x124f8>;
+		/* Cold boost: +75mV below 0C. Extended 1992 -> 2160MHz so it also covers
+		 * the OC point. Every other OPP gets this boost AND sits at or above a
+		 * mbist-vmin floor the kernel clamps to; 2160 is above every floor, so
+		 * without this it was the one undervolted point with no cold margin at
+		 * all. 0x870 = 2160. */
+		rockchip,low-temp-adjust-volt = <0x00 0x870 0x124f8>;
 		rockchip,avs-scale = <0x01>;
 		rockchip,avs = <0x01>;
 		rockchip,bin-scaling-sel = <0x00 0x0a 0x01 0x0a>;

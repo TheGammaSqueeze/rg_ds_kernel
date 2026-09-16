@@ -220,6 +220,12 @@ Flash whichever you want to the boot partition, e.g. in fastbootd:
 
    fastboot flash boot out/boot_oc.img
 
-u-boot is common to both (already 2160-capable), so no separate u-boot flash is
-needed to toggle the overclock.
+The overclock ALSO needs a bootloader whose ATF carries the 2160MHz PLL rate.
+Stock rkbin BL31 does not: with it the kernel reports 2160 while the hardware
+stays at 1992, vdd_cpu never leaves the 1992 voltage, and a benchmark shows no
+gain at all. Anbernic's shipped u-boot has the entry; a from-source build needs
+oc/atf-2160-patch.py from the rg_ds_uboot tree (both build-uboot.sh scripts run
+it). Check any image with:
+   dumpimage -T flat_dt -p 3 -o s3.bin uboot.img   # u32 at 0x178:
+   2160000000 = OC-capable, 312000000 = not.
 EOF
