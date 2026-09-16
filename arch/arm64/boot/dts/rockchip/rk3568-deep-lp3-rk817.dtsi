@@ -1236,7 +1236,12 @@
 
 &i2s3_2ch {
 	status = "okay";
-	rockchip,always-on;
+	/* rockchip,always-on removed 2026-09-16: it kept the I2S3 clocks (and the
+	 * AW883xx amp's MCLK) running whether or not anything was playing. The
+	 * RG DS has no such flag on its speaker path. If a pop or a dropped first
+	 * sample shows up on playback start, that is what the flag was hiding, and
+	 * the fix belongs in the amp's power-up sequencing, not in a permanent
+	 * clock. */
 	rockchip,trcm-sync-tx-only;
 	i2s-lrck-gpio = <&gpio4 RK_PC4 GPIO_ACTIVE_HIGH>; /* i2s3m1_lrck */
 	pinctrl-names = "default";
