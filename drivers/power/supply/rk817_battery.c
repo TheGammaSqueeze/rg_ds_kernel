@@ -2671,7 +2671,7 @@ void led_update_charger_soc_status(void)
 	int soc = rgds_led_soc;
 	int charger = rgds_led_charger;
 
-	pr_info("   led_update_charger_soc_status   charger=%d     soc= %d    factory=%d \n",
+	pr_debug("led_update_charger_soc_status charger=%d soc=%d factory=%d\n",
 		charger, soc, rgds_led_factory);
 
 	if (rgds_led_factory)
