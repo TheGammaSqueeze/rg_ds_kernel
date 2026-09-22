@@ -18,18 +18,20 @@ u-boot's BMP reader and `resource_tool` only accept these exact encodings:
 
 | File                     | Size    | Encoding                                |
 |--------------------------|---------|-----------------------------------------|
-| `logo.bmp`               | 640x480 | 24-bit, uncompressed (BI_RGB)           |
-| `logo_kernel.bmp`        | 640x480 | 24-bit, uncompressed (BI_RGB)           |
+| `logo.bmp`               | 1024x768 | 8- or 24-bit, uncompressed (BI_RGB)    |
+| `logo_kernel.bmp`        | 1024x768 | 8- or 24-bit, uncompressed (BI_RGB)    |
 | `battery_0..5.bmp`       | 220x110 | 8-bit palettised, RLE8 compressed       |
 | `battery_fail.bmp`       | 220x110 | 8-bit palettised, RLE8 compressed       |
 
-Most image editors export 32-bit BMPs, or BI_BITFIELDS, and those render as
+8-bit palettised logos are fine, device verified on the Plus, and are about a
+third of the size of the 24-bit export. What does not work is 32-bit or
+BI_BITFIELDS, which most editors will hand you by default; those render as
 garbage or not at all. Check with `file x.bmp` before committing: it must say
-`24` (or `8`) and, for the battery frames, `1 compression`.
+`8` or `24`, never `32`, and the battery frames must say `1 compression`.
 
-The panel is larger than the logo; u-boot centres it. If you change the
-dimensions, validate on a real cold boot, not a warm reboot, because the
-bootloader path only runs on a cold start.
+The logos are now the panel's native 1024x768, so u-boot does not scale them.
+Validate any change on a real cold boot, not a warm reboot, because the
+bootloader logo path only runs on a cold start.
 
 Entry order in the RSCE matters: `rk-kernel.dtb` must be packed first, then the
 bitmaps. The build scripts handle that.
