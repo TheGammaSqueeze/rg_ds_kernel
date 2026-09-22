@@ -8,6 +8,9 @@ and the boot image could not be rebuilt from source alone. The build scripts
 now take them from here.
 
 To change the boot logo, replace `logo.bmp` and `logo_kernel.bmp` and rebuild.
+The Paint.NET sources they were exported from live alongside them as
+`logo.pdn` and `logo_kernel.pdn`, so the artwork stays editable. Only the BMPs
+are read by the build; the `.pdn` files are kept for future edits.
 
 ## Format, which is not negotiable
 
