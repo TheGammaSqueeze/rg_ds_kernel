@@ -117,16 +117,24 @@ DOFF="$(read_arg dtb_offset)"
 CMDLINE="$(sed -n "s/.*--cmdline '\\([^']*\\)'.*/\\1/p" <<<"$ARGS_LINE")"
 [ -n "$PAGESZ" ] && [ -n "$CMDLINE" ] || die "could not parse boot-header parameters from template"
 
-# extract the RSCE bitmaps (logo + battery); the runtime DTB is replaced from source
-log "extracting boot logo + battery bitmaps from template RSCE"
-mkdir -p "$WORK/rsce_in"
-( cd "$WORK/rsce_in" && "$RESTOOL" --unpack --image="$WORK/tmpl/second" >/dev/null )
-BMPDIR="$WORK/rsce_in/out"
-[ -d "$BMPDIR" ] || die "resource_tool did not unpack the RSCE"
-# stock RSCE entry order: rk-kernel.dtb first, then the bitmaps in this order
+# The RSCE bitmaps (boot logo + charge animation) come from rgds/rsce in this
+# tree, so the boot image is buildable from source alone. They used to be lifted
+# out of the template boot image, which left the logos outside the repo. Falling
+# back to the template keeps older checkouts working.
+# Stock RSCE entry order: rk-kernel.dtb first, then the bitmaps in this order.
 BITMAPS=(battery_0.bmp battery_1.bmp battery_2.bmp battery_3.bmp battery_4.bmp battery_5.bmp battery_fail.bmp logo.bmp logo_kernel.bmp)
+BMPDIR="$HERE/rsce"
+if [ -d "$BMPDIR" ]; then
+  log "using boot logo + battery bitmaps from rgds/rsce"
+else
+  log "rgds/rsce missing, falling back to the template RSCE"
+  mkdir -p "$WORK/rsce_in"
+  ( cd "$WORK/rsce_in" && "$RESTOOL" --unpack --image="$WORK/tmpl/second" >/dev/null )
+  BMPDIR="$WORK/rsce_in/out"
+  [ -d "$BMPDIR" ] || die "resource_tool did not unpack the RSCE"
+fi
 for b in "${BITMAPS[@]}"; do
-  [ -f "$BMPDIR/$b" ] || die "template RSCE missing $b"
+  [ -f "$BMPDIR/$b" ] || die "missing RSCE bitmap $b in $BMPDIR"
 done
 
 # ---- 3. assemble each variant ----------------------------------------------
