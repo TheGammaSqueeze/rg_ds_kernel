@@ -118,8 +118,15 @@ dmaengine_pcm_set_runtime_hwparams(struct snd_soc_component *component,
 	dma_data = snd_soc_dai_get_dma_data(asoc_rtd_to_cpu(rtd, 0), substream);
 
 	memset(&hw, 0, sizeof(hw));
+	/*
+	 * NO_PERIOD_WAKEUP lets a client that drives its own timing, such as the
+	 * AAudio MMAP path, run without a period interrupt per burst. The
+	 * dmaengine PCM already honours it: pcm_dmaengine.c only asks for
+	 * DMA_PREP_INTERRUPT when the runtime has not set it.
+	 */
 	hw.info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
-			SNDRV_PCM_INFO_INTERLEAVED;
+			SNDRV_PCM_INFO_INTERLEAVED |
+			SNDRV_PCM_INFO_NO_PERIOD_WAKEUP;
 	hw.periods_min = 2;
 	hw.periods_max = UINT_MAX;
 	hw.period_bytes_min = dma_data->maxburst * DMA_SLAVE_BUSWIDTH_8_BYTES;
