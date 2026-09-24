@@ -107,6 +107,14 @@ enum {
 enum {
 	SILERGY_SYR82X = 8,
 	SILERGY_SYR83X = 9,
+	/*
+	 * Die 13 is the STI8070A, the part Anbernic second sourced for vdd_cpu
+	 * on later RG DS Plus units. It is register and voltage table
+	 * compatible with the Silergy parts; only the die ID differs. Verified
+	 * against the shipped Anbernic kernel, whose fan53555 accepts 8, 9 and
+	 * 13 and routes all three to the same 712500 uV / 12500 uV setup.
+	 */
+	SILERGY_STI8070A = 13,
 };
 
 struct fan53555_device_info {
@@ -336,6 +344,7 @@ static int fan53555_voltages_setup_silergy(struct fan53555_device_info *di)
 	switch (di->chip_id) {
 	case SILERGY_SYR82X:
 	case SILERGY_SYR83X:
+	case SILERGY_STI8070A:
 		di->vsel_min = 712500;
 		di->vsel_step = 12500;
 		break;
