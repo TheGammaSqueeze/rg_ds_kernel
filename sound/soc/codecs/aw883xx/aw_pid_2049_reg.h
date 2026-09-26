@@ -24,6 +24,12 @@
 #define AW_PID_2049_PWMCTRL_REG			(0x11)
 #define AW_PID_2049_I2SCFG3_REG			(0x12)
 #define AW_PID_2049_DBGCTRL_REG			(0x13)
+/*
+ * The AW88166 moved DBGCTRL from 0x13 to 0x18. The memory clock select bit
+ * lives in it, so writing the 0x2049 address leaves the DSP SRAM unclocked and
+ * the firmware load fails its sram check. See AW88166_DBGCTRL_REG in mainline.
+ */
+#define AW_PID_2066_DBGCTRL_REG				(0x0018)
 #define AW_PID_2049_HAGCST_REG			(0x20)
 #define AW_PID_2049_VBAT_REG			(0x21)
 #define AW_PID_2049_TEMP_REG			(0x22)
@@ -123,6 +129,7 @@ static const unsigned char aw_pid_2049_reg_access[AW_PID_2049_REG_MAX] = {
 	[AW_PID_2049_PWMCTRL_REG]	= (REG_RD_ACCESS | REG_WR_ACCESS),
 	[AW_PID_2049_I2SCFG3_REG]	= (REG_RD_ACCESS | REG_WR_ACCESS),
 	[AW_PID_2049_DBGCTRL_REG]	= (REG_RD_ACCESS | REG_WR_ACCESS),
+	[AW_PID_2066_DBGCTRL_REG]	= (REG_RD_ACCESS | REG_WR_ACCESS),
 	[AW_PID_2049_HAGCST_REG]	= (REG_RD_ACCESS),
 	[AW_PID_2049_VBAT_REG]		= (REG_RD_ACCESS),
 	[AW_PID_2049_TEMP_REG]		= (REG_RD_ACCESS),
@@ -2392,6 +2399,7 @@ static const unsigned char aw_pid_2049_reg_access[AW_PID_2049_REG_MAX] = {
  *******************************************/
 #define AW_PID_2066_DSP_CFG_ADDR			(0x9B00)
 #define AW_PID_2066_DSP_FW_ADDR				(0x8980)
+
 
 #define AW_PID_2066_DSP_REG_VMAX			(0x9B12)
 

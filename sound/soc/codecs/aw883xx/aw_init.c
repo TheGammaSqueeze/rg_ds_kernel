@@ -536,7 +536,8 @@ static int aw883xx_dev_init(struct aw883xx *aw883xx)
 	aw_pa->dsp_en_desc.enable = AW_PID_2049_DSPBY_WORKING_VALUE;
 	aw_pa->dsp_en_desc.disable = AW_PID_2049_DSPBY_BYPASS_VALUE;
 
-	aw_pa->memclk_desc.reg = AW_PID_2049_DBGCTRL_REG;
+	aw_pa->memclk_desc.reg = is2066 ?
+			AW_PID_2066_DBGCTRL_REG : AW_PID_2049_DBGCTRL_REG;
 	aw_pa->memclk_desc.mask = AW_PID_2049_MEM_CLKSEL_MASK;
 	aw_pa->memclk_desc.mcu_hclk = AW_PID_2049_MEM_CLKSEL_DAP_HCLK_VALUE;
 	aw_pa->memclk_desc.osc_clk = AW_PID_2049_MEM_CLKSEL_OSC_CLK_VALUE;
