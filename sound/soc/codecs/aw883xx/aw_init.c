@@ -109,6 +109,26 @@ static uint16_t aw883xx_db_val_to_reg(uint16_t value)
 			(value % AW_PID_2049_VOLUME_STEP_DB));
 }
 
+/*
+ * AW88166 (0x2066) puts the volume field at bits [9:0] of SYSCTRL2, not at
+ * [15:6] like the 0x2049 parts. See AW88166_VOL_START_BIT in the mainline
+ * aw88166.h. Writing it at the 0x2049 offset both misreports the level and
+ * walks over the bits that live up there on this chip: I2STXEN at bit 9 and
+ * HMUTE at bit 8, so every fade and mute was corrupting the I2S transmit
+ * enable and the hard mute rather than changing the volume.
+ */
+static inline int aw883xx_vol_shift(struct aw883xx *aw883xx)
+{
+	return (aw883xx->chip_id == AW883XX_PID_2066) ?
+			0 : AW_PID_2049_VOL_START_BIT;
+}
+
+static inline uint16_t aw883xx_vol_mask(struct aw883xx *aw883xx)
+{
+	return (uint16_t)~(((1 << AW_PID_2049_VOL_BITS_LEN) - 1)
+			<< aw883xx_vol_shift(aw883xx));
+}
+
 static int aw883xx_set_volume(struct aw883xx *aw883xx, uint16_t value)
 {
 	uint16_t reg_value = 0;
@@ -119,8 +139,8 @@ static int aw883xx_set_volume(struct aw883xx *aw883xx, uint16_t value)
 
 	aw_dev_dbg(aw883xx->dev, "value 0x%x , reg:0x%x", value, real_value);
 
-	/*[15 : 6] volume*/
-	real_value = (real_value << AW_PID_2049_VOL_START_BIT) | (reg_value & AW_PID_2049_VOL_MASK);
+	real_value = (real_value << aw883xx_vol_shift(aw883xx)) |
+			(reg_value & aw883xx_vol_mask(aw883xx));
 
 	/* write value */
 	aw883xx_reg_write(aw883xx, AW_PID_2049_SYSCTRL2_REG, real_value);
@@ -136,8 +156,8 @@ static int aw883xx_get_volume(struct aw883xx *aw883xx, uint16_t *value)
 	/* read value */
 	aw883xx_reg_read(aw883xx, AW_PID_2049_SYSCTRL2_REG, &reg_value);
 
-	/*[15 : 6] volume*/
-	real_value = reg_value >> AW_PID_2049_VOL_START_BIT;
+	real_value = (reg_value >> aw883xx_vol_shift(aw883xx)) &
+			((1 << AW_PID_2049_VOL_BITS_LEN) - 1);
 
 	real_value = aw_pid_2049_reg_val_to_db(real_value);
 

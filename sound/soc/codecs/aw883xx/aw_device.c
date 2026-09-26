@@ -991,6 +991,26 @@ static int aw_dev_reg_container_update(struct aw_device *aw_dev,
 
 	aw_dev->ops.aw_get_volume(aw_dev, (uint16_t *)&aw_dev->volume_desc.init_volume);
 
+	/*
+	 * The ACF profile leaves a small standing attenuation in SYSCTRL2 (about
+	 * 1.4 dB on the RG DS Plus), and init_volume is whatever we read back, so
+	 * that attenuation becomes the ceiling every fade-in ramps up to. Nothing
+	 * needs it: the part's own default is no attenuation. Target 0 so the amp
+	 * runs at the gain the profile was tuned against.
+	 */
+	if (aw_dev->volume_desc.init_volume) {
+		aw_dev_info(aw_dev->dev, "clearing %d (0.125dB) of profile attenuation",
+				aw_dev->volume_desc.init_volume);
+		aw_dev->volume_desc.init_volume = 0;
+		/*
+		 * With fading enabled the ramp below walks up to init_volume, so
+		 * zeroing it is enough. With fading off nothing ever writes the
+		 * volume field and the profile value would stand, so apply it here.
+		 */
+		if (!aw_dev->fade_en)
+			aw_dev->ops.aw_set_volume(aw_dev, 0);
+	}
+
 	/*keep min volume*/
 	if (aw_dev->fade_en)
 		aw_dev->ops.aw_set_volume(aw_dev, aw_dev->volume_desc.mute_volume);
