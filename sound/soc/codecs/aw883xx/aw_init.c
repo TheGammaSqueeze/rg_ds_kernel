@@ -184,7 +184,12 @@ static void aw_pid_2049_i2s_tx_enable(struct aw_device *aw_dev, bool flag)
 
 	aw_dev_dbg(aw883xx->dev, "enter");
 
-	if (flag) {
+	if (aw883xx->chip_id == AW883XX_PID_2066) {
+		aw883xx_reg_write_bits(aw883xx, AW_PID_2066_I2SCTRL3_REG,
+				AW_PID_2066_I2STXEN_MASK,
+				flag ? AW_PID_2066_I2STXEN_ENABLE_VALUE :
+					AW_PID_2066_I2STXEN_DISABLE_VALUE);
+	} else if (flag) {
 		aw883xx_reg_write_bits(aw883xx, AW_PID_2049_I2SCFG1_REG,
 				AW_PID_2049_I2STXEN_MASK,
 				AW_PID_2049_I2STXEN_ENABLE_VALUE);
@@ -495,12 +500,14 @@ static int aw883xx_dev_init(struct aw883xx *aw883xx)
 	aw_pa->vcalb_desc.vcalb_adj_shift = AW_PID_2049_VCALB_ADJ_FACTOR;
 
 	aw_pa->vcalb_desc.icalk_value_factor = AW_PID_2049_ICABLK_FACTOR;
-	aw_pa->vcalb_desc.icalk_reg = AW_PID_2049_EFRM2_REG;
+	aw_pa->vcalb_desc.icalk_reg = is2066 ?
+			AW_PID_2066_EFRM2_REG : AW_PID_2049_EFRM2_REG;
 	aw_pa->vcalb_desc.icalk_reg_mask = AW_PID_2049_EF_ISN_GESLP_MASK;
 	aw_pa->vcalb_desc.icalk_sign_mask = AW_PID_2049_EF_ISN_GESLP_SIGN_MASK;
 	aw_pa->vcalb_desc.icalk_neg_mask = AW_PID_2049_EF_ISN_GESLP_SIGN_NEG;
 
-	aw_pa->vcalb_desc.vcalk_reg = AW_PID_2049_EFRH_REG;
+	aw_pa->vcalb_desc.vcalk_reg = is2066 ?
+			AW_PID_2066_EFRH_REG : AW_PID_2049_EFRH_REG;
 	aw_pa->vcalb_desc.vcalk_reg_mask = AW_PID_2049_EF_VSN_GESLP_MASK;
 	aw_pa->vcalb_desc.vcalk_sign_mask = AW_PID_2049_EF_VSN_GESLP_SIGN_MASK;
 	aw_pa->vcalb_desc.vcalk_neg_mask = AW_PID_2049_EF_VSN_GESLP_SIGN_NEG;
@@ -664,7 +671,8 @@ static int aw883xx_dev_init(struct aw883xx *aw883xx)
 	aw_pa->dsp_crc_desc.ctl_enable = AW_PID_2049_AGC_DSP_CTL_ENABLE_VALUE;
 	aw_pa->dsp_crc_desc.ctl_disable = AW_PID_2049_AGC_DSP_CTL_DISABLE_VALUE;
 
-	aw_pa->cco_mux_desc.reg = AW_PID_2049_PLLCTRL1_REG;
+	aw_pa->cco_mux_desc.reg = is2066 ?
+			AW_PID_2066_PLLCTRL1_REG : AW_PID_2049_PLLCTRL1_REG;
 	aw_pa->cco_mux_desc.mask = AW_PID_2049_CCO_MUX_MASK;
 	aw_pa->cco_mux_desc.divider = AW_PID_2049_CCO_MUX_DIVIDED_VALUE;
 	aw_pa->cco_mux_desc.bypass = AW_PID_2049_CCO_MUX_BYPASS_VALUE;
@@ -676,7 +684,8 @@ static int aw883xx_dev_init(struct aw883xx *aw883xx)
 
 	aw_pa->chansel_desc.rxchan_reg = AW_PID_2049_I2SCTRL_REG;
 	aw_pa->chansel_desc.rxchan_mask = AW_PID_2049_CHSEL_MASK;
-	aw_pa->chansel_desc.txchan_reg = AW_PID_2049_I2SCFG1_REG;
+	aw_pa->chansel_desc.txchan_reg = is2066 ?
+			AW_PID_2066_I2SCFG1_REG : AW_PID_2049_I2SCFG1_REG;
 	aw_pa->chansel_desc.txchan_mask = AW_PID_2049_I2SCHS_MASK;
 
 	aw_pa->chansel_desc.rx_left = AW_PID_2049_CHSEL_LEFT_VALUE;
