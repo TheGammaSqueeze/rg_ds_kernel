@@ -1,82 +1,120 @@
-# RG DS kernel build
+# RG DS Plus kernel build
 
-This is the Linux 6.1 kernel for the Anbernic RG DS (Rockchip RK3566, dual
-640x480 DSI panels), built as a functional drop-in for the stock 6.1.141 kernel.
+This is the Linux 6.1 kernel for the Anbernic RG DS Plus (Rockchip RK3568, dual
+DSI panels, microSD boot). This branch (`rgdsplus-main`) builds the RG DS Plus;
+the `main` branch of the same repository builds the RG DS with the same scripts
+and driver code, the two differ in their board device trees, boot logos and
+`rgds/board.conf`.
 
-The board device tree is kept here **as source**, not as a prebuilt blob:
+Everything a boot image needs is in this tree: kernel, board device tree as
+source, the RSCE boot logo and charge animation bitmaps, the GammaOS ramdisk and
+boot header parameters, and the WiFi driver source. The only thing to install
+is the compiler.
+
+The board device tree is kept **as source**, not as a prebuilt blob:
 
 | file | result |
 |------|--------|
-| `arch/arm64/boot/dts/rockchip/rk3566-anbernic-rg-ds.dts`    | stock clocks: CPU 1992 MHz, GPU 800 MHz |
-| `arch/arm64/boot/dts/rockchip/rk3566-anbernic-rg-ds-oc.dts` | overclock: CPU 2160 MHz, GPU 900 MHz + undervolt |
+| `arch/arm64/boot/dts/rockchip/rk3568-anbernic-rg-ds-plus.dts` | CPU per-bin points up to 2160 MHz, GPU 800 MHz, AW88166 speaker amp, microSD UHS-I |
 
-Both are compiled by the normal kernel `dtbs` build. The overclock delta (which
-OPP/voltage lines differ) is documented in
-`arch/arm64/boot/dts/rockchip/RG_DS_OVERCLOCK.md`.
+There is one device tree and one boot image for the Plus; the per-bin CPU
+voltages live in it and the kernel picks the bin from the OTP.
 
 ## Toolchain
 
-Built with Android clang `r487747c` (`LLVM=1`), the same toolchain as stock.
-`gcc` will not build this tree (it uses clang-only kernel cflags such as
-`-ftrivial-auto-var-init=zero`). Point `CLANGBIN` at your clang `bin/` directory
-if it is not at the default path baked into the scripts.
-
-## Build a kernel + two flashable boot images
+The RG DS Plus kernel is built with the GNU cross compiler
+(`rgds/board.conf`, `TOOLCHAIN=gcc`):
 
 ```
-# 1. configure
-make ARCH=arm64 rockchip_rgds_defconfig
-
-# 2. build the kernel and both boot images (host-side, no device / root needed)
-rgds/build-boot-images.sh /path/to/stock-boot.img
+sudo apt install gcc-aarch64-linux-gnu python3 make flex bison bc libssl-dev libelf-dev
 ```
 
-`build-boot-images.sh`:
+The prefix defaults to `aarch64-linux-gnu-`; set `CROSS_COMPILE` for another.
+Every module loaded into the kernel must come from the same compiler and tree
+(see WiFi module below); that is why the compiler is pinned per board.
 
-1. builds the kernel `Image` and compiles **both** device trees from the `.dts`
-   source above;
-2. takes the ramdisk, boot logo / battery bitmaps and boot-header parameters from
-   the stock boot image you pass in (the kernel and device tree are always
-   rebuilt from this tree, never taken from that image);
-3. rebuilds the Rockchip RSCE resource (the RG DS keeps the runtime device tree
-   there as `rk-kernel.dtb`) with the freshly compiled DTB, and repacks two
-   images:
+## Build a kernel + flashable boot image
 
 ```
-out/boot_noc.img   CPU 1992 / GPU 800        (stock DTS)
-out/boot_oc.img    CPU 2160 / GPU 900 + UV   (overclock DTS)
+rgds/build-boot-images.sh
 ```
 
-Get the stock boot image once from your device:
+That is the whole build on a fresh clone. The script:
+
+1. applies `rockchip_rgds_defconfig` if the tree has no `.config`;
+2. builds the kernel `Image` and compiles the device tree from the `.dts` source
+   above;
+3. takes the ramdisk from `rgds/ramdisk.cpio.gz` and the boot header fields from
+   `rgds/boot-header.conf` (both from the GammaOS boot image for this board, its
+   `androidboot.boot_devices=fe2b0000.mmc,fe2c0000.mmc` cmdline included; the
+   kernel and device tree are never taken from an image);
+4. rebuilds the Rockchip RSCE resource (u-boot reads the runtime device tree from
+   it as `rk-kernel.dtb`, next to the boot logo and charge animation) from the
+   freshly compiled DTB and the bitmaps in `rgds/rsce/`, and repacks:
 
 ```
-adb pull /dev/block/by-name/boot stock-boot.img     # root shell or recovery
+out/boot.img
 ```
 
-or use the `boot.img` from a GammaOS release for this device.
+The boot header id is recomputed the way Rockchip u-boot verifies it, so the
+image boots on an AVB-enforcing u-boot as well.
 
-## Flash
-
-The RG DS images are unsigned (AVB disabled), so no re-signing is needed:
+To reuse the ramdisk and header of some other boot image instead of the tracked
+ones, pass it as the first argument:
 
 ```
-fastboot flash boot out/boot_oc.img        # or boot_noc.img
+rgds/build-boot-images.sh /path/to/boot.img
 ```
 
-The overclock is purely a device-tree change; the shipped u-boot / ATF already
-support the 2160 MHz PLL, so the same u-boot runs both images and no separate
-u-boot flash is needed to toggle it.
+The recovery image is not built here; GammaOS builds it from the same kernel and
+device tree with its own recovery ramdisk.
 
 ## WiFi module
 
-The RTL8821CS SDIO WiFi is an out-of-tree module, built against this kernel from
-<https://github.com/u-osmi/rtl8821cs-arm64>. It must be built with this exact
-kernel's `Module.symvers` and the clang toolchain above, or the loaded `.ko` is
-rejected with a `module_layout` version mismatch.
+The RTL8821CS SDIO WiFi is an out-of-tree module. Its source is tracked in
+`external/rtl8821cs` (Realtek v5.15.9.3, patched to build as a cfg80211 driver
+named `8821cs`, with the suspend/resume fix). Build it from the same checkout,
+right after the kernel:
 
-## Tools
+```
+rgds/build-wifi.sh        # -> out/8821cs.ko
+```
 
-`rgds/tools/` vendors the small helpers the boot-image build needs:
-`mkbootimg.py` / `unpack_bootimg.py` (AOSP, Apache-2.0) and Rockchip's
-`resource_tool` (from `rockchip-linux/rkbin`). They are build helpers only; the
-device tree itself is always compiled from the `.dts` source in this tree.
+It must come from the same tree and compiler as the flashed kernel or it is
+rejected at load with `disagrees about version of symbol module_layout`; the
+script regenerates `Module.symvers` from the current `vmlinux` first. On the
+Plus the module ships in `vendor_dlkm` (`/vendor/lib/modules/8821cs.ko`).
+
+## Flash
+
+The Plus boots from microSD; from fastbootd on the device:
+
+```
+fastboot flash boot out/boot.img
+```
+
+The 2160 MHz CPU point needs a bootloader whose ATF carries that PLL rate; the
+GammaOS u-boot for the Plus does.
+
+## Layout of rgds/
+
+| path | what |
+|------|------|
+| `board.conf` | board name, compiler, DTB list for this branch |
+| `toolchain.sh` | compiler selection shared by the two build scripts |
+| `build-boot-images.sh` | kernel + DTB + RSCE + boot image |
+| `build-wifi.sh` | `8821cs.ko` against this tree |
+| `ramdisk.cpio.gz`, `boot-header.conf` | GammaOS ramdisk and boot header fields |
+| `rsce/` | boot logo and charge animation bitmaps (see `rsce/README.md`) |
+| `tools/` | `mkbootimg.py` / `unpack_bootimg.py` (AOSP, Apache-2.0), Rockchip `resource_tool` (rkbin), `dtbcmp.py` |
+
+## Verifying a device tree change
+
+`rgds/tools/dtbcmp.py` compares two DTBs semantically: every node addressed by
+path, phandle references resolved to their target node (honouring `#clock-cells`
+and friends), compared as sets AND in order, because node order is functional on
+these boards (the kernel probes platform devices in tree order and u-boot walks
+nodes in order).
+
+    python3 rgds/tools/dtbcmp.py old.dtb new.dtb
+    # -> SEMANTICALLY IDENTICAL (same properties AND same node order)

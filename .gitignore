@@ -172,3 +172,6 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+
+# tracked ramdisk donor for rgds/build-boot-images.sh (the kernel ignores *.gz)
+!/rgds/ramdisk.cpio.gz
