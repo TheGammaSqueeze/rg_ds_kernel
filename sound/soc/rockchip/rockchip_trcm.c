@@ -521,6 +521,7 @@ static void dmaengine_pcm_release_chan(struct dmaengine_trcm *trcm)
 		if (!trcm->chan[i])
 			continue;
 		dma_release_channel(trcm->chan[i]);
+		trcm->chan[i] = NULL;
 	}
 }
 
