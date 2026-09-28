@@ -199,6 +199,9 @@ struct joypad {
 	struct analog_mux *amux;
 	/* analog mux max count */
 	int amux_count;
+	/* DT "joypad-no-right-stick": board has no right stick; ch0/ch1 float
+	 * and would report phantom ABS_RX/ABS_RY, so they are never exposed. */
+	bool no_right_stick;
 	/* analog button */
 	struct bt_adc *adcs;
 
@@ -979,6 +982,9 @@ static void joypad_adc_check(struct joypad *joypad)
 			val = adc->min;
 
 		adc->value = val;
+		if (joypad->no_right_stick &&
+		    (adc->report_type == ABS_RX || adc->report_type == ABS_RY))
+			continue;
 		input_report_abs(joypad->input, adc->report_type,
 				 adc->invert ? -val : val);
 	}
@@ -1417,6 +1423,10 @@ static int joypad_input_setup(struct device *dev, struct joypad *joypad)
 		if (nbtn < 4 && fuzz < JOY_ABS_FUZZ)
 			fuzz = JOY_ABS_FUZZ;
 
+		if (joypad->no_right_stick &&
+		    (adc->report_type == ABS_RX || adc->report_type == ABS_RY))
+			continue;
+
 		input_set_abs_params(input, adc->report_type,
 				adc->min, adc->max,
 				fuzz,
@@ -1507,6 +1517,8 @@ static int joypad_dt_parse(struct device *dev, struct joypad *joypad)
 	/* initialize value check from boot.ini */
 	joypad_setup_value_check(dev, joypad);
 
+	joypad->no_right_stick = device_property_read_bool(dev,
+						"joypad-no-right-stick");
 	device_property_read_u32(dev, "amux-count",
 				&joypad->amux_count);
 
