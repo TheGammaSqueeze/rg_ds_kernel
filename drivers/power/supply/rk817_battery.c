@@ -2567,16 +2567,36 @@ static enum power_supply_property rk817_bat_props[] = {
 	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
 };
 
+static int rk817_bat_cw2015_soc(void);
+
 static int rk817_get_capacity_leve(struct rk817_battery_device *battery)
 {
-	int dsoc;
+	int dsoc, cw_soc;
 
 	if (battery->pdata->bat_mode == MODE_VIRTUAL)
 		return POWER_SUPPLY_CAPACITY_LEVEL_NORMAL;
 
+	/*
+	 * The level must follow the SOC this driver reports as CAPACITY (the cw2015
+	 * gauge when it is there), not the rk817's own dsoc. Android's BatteryService
+	 * shuts the device down as soon as the level reads CRITICAL, before it looks
+	 * at the percentage. On a freshly flashed RG DS Plus the rk817 dsoc is whatever
+	 * the PMIC registers held from the previous firmware; when that was under one
+	 * percent, the first boot on battery showed 100 percent and shut itself down
+	 * during the setup wizard (fine on a charger: current_avg > 0), until a charge
+	 * session had rewritten the registers. Verified on a dev unit by zeroing
+	 * SOC_REG0..2: capacity 100, capacity_level Low.
+	 */
 	dsoc = (battery->dsoc + 500) / 1000;
-	if (dsoc < 1 && battery->current_avg < 0)
+	cw_soc = rk817_bat_cw2015_soc();
+	if (cw_soc >= 0)
+		dsoc = cw_soc;
+	/* critical only when the battery really is at its power-off voltage */
+	if (dsoc < 1 && battery->current_avg < 0 &&
+	    battery->voltage_avg <= battery->pdata->pwroff_vol + 50)
 		return POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
+	if (dsoc < 1)
+		return POWER_SUPPLY_CAPACITY_LEVEL_LOW;
 	else if (dsoc <= 20)
 		return POWER_SUPPLY_CAPACITY_LEVEL_LOW;
 	else if (dsoc <= 70)
