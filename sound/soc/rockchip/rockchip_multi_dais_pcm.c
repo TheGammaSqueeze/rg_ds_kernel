@@ -66,6 +66,7 @@ struct dmaengine_mpcm_runtime_data {
 	struct dma_interleaved_template *xt;
 	dma_cookie_t cookies[MAX_DAIS];
 	unsigned int *channel_maps;
+	bool mirror;
 	int num_chans;
 	unsigned int pos;
 	unsigned int master_chan;
@@ -270,7 +271,8 @@ static int dmaengine_mpcm_prepare_and_submit(struct snd_pcm_substream *substream
 			return -ENOMEM;
 
 		prtd->cookies[i] = dmaengine_submit(desc);
-		offset += samples_to_bytes(runtime, maps[i]);
+		if (!(prtd->mirror))
+			offset += samples_to_bytes(runtime, maps[i]);
 	}
 
 	if (desc) {
@@ -406,7 +408,8 @@ static int __mpcm_prepare_single_and_submit(struct snd_pcm_substream *substream,
 			callback = true;
 		}
 		dmaengine_submit(desc);
-		offset += samples_to_bytes(runtime, maps[i]);
+		if (!(prtd->mirror))
+			offset += samples_to_bytes(runtime, maps[i]);
 	}
 
 	return 0;
@@ -788,6 +791,7 @@ static int dmaengine_mpcm_open(struct snd_soc_component *component,
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		prtd->channel_maps = pcm->mdais->playback_channel_maps;
+		prtd->mirror = pcm->mdais->playback_mirror;
 		for (i = 0; i < pcm->mdais->num_dais; i++)
 			prtd->chans[i] = pcm->tx_chans[i];
 	} else {

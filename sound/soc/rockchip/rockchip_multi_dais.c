@@ -518,7 +518,10 @@ static void mdais_fixup_dai(struct snd_soc_dai_driver *soc_dai,
 	tx_maps = mdais->playback_channel_maps;
 	rx_maps = mdais->capture_channel_maps;
 	for (i = 0; i < mdais->num_dais; i++) {
-		tch += tx_maps[i];
+		if (mdais->playback_mirror)
+			tch = max(tch, (int)tx_maps[i]);
+		else
+			tch += tx_maps[i];
 		rch += rx_maps[i];
 	}
 
@@ -592,6 +595,8 @@ static int rockchip_mdais_probe(struct platform_device *pdev)
 	if (ret)
 		memset(map, 0x0, sizeof(*map) * count);
 	mdais->mclk_fs_maps = map;
+
+	mdais->playback_mirror = of_property_read_bool(np, "rockchip,playback-mirror");
 
 	for (i = 0; i < count; i++) {
 		node = of_parse_phandle(np, "dais", i);

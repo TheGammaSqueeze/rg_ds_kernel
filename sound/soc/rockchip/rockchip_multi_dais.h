@@ -27,6 +27,10 @@ struct rk_mdais_dev {
 	unsigned int *capture_channel_maps;
 	unsigned int *mclk_fs_maps;
 	int num_dais;
+	/* RG DS: every playback DAI is fed the same channels from the start of
+	 * each frame instead of its own slice (two I2S links, one stereo
+	 * stream: the jack codec and the speaker amps hear the same audio). */
+	bool playback_mirror;
 };
 
 int snd_dmaengine_mpcm_register(struct rk_mdais_dev *mdais);

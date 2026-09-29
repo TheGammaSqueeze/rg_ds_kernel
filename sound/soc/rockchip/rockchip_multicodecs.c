@@ -77,6 +77,16 @@ struct multicodecs_data {
 	int mclk_rate_map_count;
 	bool codec_hp_det;
 	bool headset_unplugging;
+	/* RG DS: card controls (full name, value text) applied when a plug goes
+	 * into the jack and when it leaves. On a card where the speaker amps and
+	 * the jack codec share one PCM stream this is what mutes the amps and
+	 * points the codec at the headphones, independent of what user space
+	 * routes (an MMAP stream never touches the codec path). */
+	const char **jack_in_controls;
+	int num_jack_in_controls;
+	const char **jack_out_controls;
+	int num_jack_out_controls;
+	int jack_ctl_retries;
 	u32 num_keys;
 	u32 last_key;
 	u32 keyup_voltage;
@@ -230,6 +240,85 @@ static int mc_keys_load_keymap(struct device *dev,
 	return 0;
 }
 
+/* RG DS: apply one "control name", "value" pair. Enum values are given by
+ * their text, everything else as a number. Returns false when the control is
+ * not on the card (yet). */
+static bool mc_jack_apply_control(struct multicodecs_data *mc_data,
+				  const char *name, const char *value)
+{
+	struct snd_card *snd_card = mc_data->snd_card.snd_card;
+	struct snd_ctl_elem_value *uctl;
+	struct snd_ctl_elem_info *uinfo;
+	struct snd_kcontrol *kctl;
+	long val = 0;
+	int ret;
+
+	kctl = snd_soc_card_get_kcontrol(&mc_data->snd_card, name);
+	if (!kctl || !kctl->put || !kctl->info)
+		return false;
+
+	uctl = kzalloc(sizeof(*uctl), GFP_KERNEL);
+	uinfo = kzalloc(sizeof(*uinfo), GFP_KERNEL);
+	if (!uctl || !uinfo)
+		goto out;
+
+	if (kctl->info(kctl, uinfo))
+		goto out;
+
+	if (uinfo->type == SNDRV_CTL_ELEM_TYPE_ENUMERATED) {
+		unsigned int i, items = uinfo->value.enumerated.items;
+
+		for (i = 0; i < items; i++) {
+			uinfo->value.enumerated.item = i;
+			if (kctl->info(kctl, uinfo))
+				goto out;
+			if (!strcmp(uinfo->value.enumerated.name, value))
+				break;
+		}
+		if (i >= items) {
+			dev_warn(mc_data->snd_card.dev, "jack control %s has no value %s\n",
+				 name, value);
+			goto out;
+		}
+		uctl->value.enumerated.item[0] = i;
+	} else {
+		if (kstrtol(value, 0, &val))
+			goto out;
+		uctl->value.integer.value[0] = val;
+	}
+
+	ret = kctl->put(kctl, uctl);
+	if (ret > 0)
+		snd_ctl_notify(snd_card, SNDRV_CTL_EVENT_MASK_VALUE, &kctl->id);
+out:
+	kfree(uctl);
+	kfree(uinfo);
+	return true;
+}
+
+/* Apply the plugged or unplugged control list. Returns false when a control
+ * is missing (the smart amps add theirs once their firmware has loaded, which
+ * can be after the first jack scan at boot). */
+static bool mc_jack_apply_controls(struct multicodecs_data *mc_data, bool plugged)
+{
+	const char **list = plugged ? mc_data->jack_in_controls : mc_data->jack_out_controls;
+	int num = plugged ? mc_data->num_jack_in_controls : mc_data->num_jack_out_controls;
+	bool complete = true;
+	int i;
+
+	if (!num || !mc_data->snd_card.snd_card)
+		return true;
+
+	for (i = 0; i + 1 < num; i += 2)
+		if (!mc_jack_apply_control(mc_data, list[i], list[i + 1]))
+			complete = false;
+
+	if (complete)
+		dev_info(mc_data->snd_card.dev, "jack %s: %d controls applied\n",
+			 plugged ? "in" : "out", num / 2);
+	return complete;
+}
+
 static void adc_jack_handler(struct work_struct *work)
 {
 	struct multicodecs_data *mc_data = container_of(to_delayed_work(work),
@@ -240,6 +329,14 @@ static void adc_jack_handler(struct work_struct *work)
 
 	/* Reset unplugging flag before processing jack state */
 	mc_data->headset_unplugging = false;
+
+	if (!mc_jack_apply_controls(mc_data, gpiod_get_value(mc_data->hp_det_gpio)) &&
+	    mc_data->jack_ctl_retries < 40) {
+		/* a control is not registered yet: look again shortly */
+		mc_data->jack_ctl_retries++;
+		queue_delayed_work(system_power_efficient_wq, &mc_data->handler,
+				   msecs_to_jiffies(250));
+	}
 
 	if (!gpiod_get_value(mc_data->hp_det_gpio)) {
 		snd_soc_jack_report(jack_headset, 0, SND_JACK_HEADSET);
@@ -811,6 +908,30 @@ static int rk_multicodecs_resume_post(struct snd_soc_card *card)
 	return 0;
 }
 
+/* RG DS: "name", "value" string pairs for the jack in/out control lists. */
+static int mc_parse_jack_controls(struct platform_device *pdev, const char *prop,
+				  const char ***list, int *num)
+{
+	struct device_node *np = pdev->dev.of_node;
+	int count, ret;
+
+	count = of_property_count_strings(np, prop);
+	if (count <= 0)
+		return 0;
+	if (count & 1) {
+		dev_err(&pdev->dev, "%s needs name, value pairs\n", prop);
+		return -EINVAL;
+	}
+	*list = devm_kcalloc(&pdev->dev, count, sizeof(char *), GFP_KERNEL);
+	if (!*list)
+		return -ENOMEM;
+	ret = of_property_read_string_array(np, prop, *list, count);
+	if (ret < 0)
+		return ret;
+	*num = count;
+	return 0;
+}
+
 static int rk_multicodecs_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card;
@@ -996,6 +1117,17 @@ static int rk_multicodecs_probe(struct platform_device *pdev)
 
 	mc_data->codec_hp_det =
 		of_property_read_bool(np, "rockchip,codec-hp-det");
+
+	ret = mc_parse_jack_controls(pdev, "rockchip,jack-in-controls",
+				     &mc_data->jack_in_controls,
+				     &mc_data->num_jack_in_controls);
+	if (ret)
+		return ret;
+	ret = mc_parse_jack_controls(pdev, "rockchip,jack-out-controls",
+				     &mc_data->jack_out_controls,
+				     &mc_data->num_jack_out_controls);
+	if (ret)
+		return ret;
 
 	mc_data->adc = devm_iio_channel_get(&pdev->dev, "adc-detect");
 
