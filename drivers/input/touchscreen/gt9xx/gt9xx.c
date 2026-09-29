@@ -170,6 +170,18 @@ Output:
     numbers of i2c_msgs to transfer: 
       2: succeed, otherwise: failed
 *********************************************************/
+/* RG DS: true when a failed transfer says nothing about the controller:
+ * the adapter is suspended (rk3x-i2c answers -EACCES, the core -ESHUTDOWN)
+ * or the controller has been put to sleep by us. */
+static bool gtp_bus_unavailable(struct goodix_ts_data *ts, s32 err)
+{
+    if (err == -EACCES || err == -ESHUTDOWN)
+        return true;
+    if (ts && ts->gtp_is_suspend)
+        return true;
+    return false;
+}
+
 static s32 gtp_i2c_read(struct i2c_client *client, u8 *buf, s32 len)
 {
     struct i2c_msg msgs[2];
@@ -203,10 +215,8 @@ static s32 gtp_i2c_read(struct i2c_client *client, u8 *buf, s32 len)
     }
     if((retries >= 5))
     {
-    #if GTP_COMPATIBLE_MODE
         struct goodix_ts_data *ts = i2c_get_clientdata(client);
-    #endif
-    
+
     #if GTP_GESTURE_WAKEUP
         // reset chip would quit doze mode
         if (DOZE_ENABLED == doze_status)
@@ -214,6 +224,14 @@ static s32 gtp_i2c_read(struct i2c_client *client, u8 *buf, s32 len)
             return ret;
         }
     #endif
+        /* RG DS: a bus that is suspended (or a controller we put to sleep)
+         * is not a broken controller. Resetting it here rebooted the chip
+         * with the panel dark, and its fresh baseline then rejected touches
+         * for seconds after the panel came back. */
+        if (gtp_bus_unavailable(ts, ret))
+        {
+            return ret;
+        }
         GTP_ERROR("I2C Read: 0x%04X, %d bytes failed, errcode: %d! Process reset.", (((u16)(buf[0] << 8)) | buf[1]), len-2, ret);
     #if GTP_COMPATIBLE_MODE
         if (CHIP_TYPE_GT9F == ts->chip_type)
@@ -267,16 +285,18 @@ static s32 gtp_i2c_write(struct i2c_client *client,u8 *buf,s32 len)
     }
     if((retries >= 5))
     {
-    #if GTP_COMPATIBLE_MODE
         struct goodix_ts_data *ts = i2c_get_clientdata(client);
-    #endif
-    
+
     #if GTP_GESTURE_WAKEUP
         if (DOZE_ENABLED == doze_status)
         {
             return ret;
         }
     #endif
+        if (gtp_bus_unavailable(ts, ret))
+        {
+            return ret;
+        }
         GTP_ERROR("I2C Write: 0x%04X, %d bytes failed, errcode: %d! Process reset.", (((u16)(buf[0] << 8)) | buf[1]), len-2, ret);
     #if GTP_COMPATIBLE_MODE
         if (CHIP_TYPE_GT9F == ts->chip_type)
@@ -1068,6 +1088,11 @@ static enum hrtimer_restart goodix_ts_timer_handler(struct hrtimer *timer)
     struct goodix_ts_data *ts = container_of(timer, struct goodix_ts_data, timer);
 
     GTP_DEBUG_FUNC();
+
+    /* RG DS: the panel-off path cancels this timer; a callback that was
+     * already running must not queue a poll or re-arm behind its back. */
+    if (ts->gtp_is_suspend)
+        return HRTIMER_NORESTART;
 
     queue_work(goodix_wq, &ts->work);
     /* RG DS: poll at gtp_poll_hz (default 120Hz); recomputed each cycle so the
@@ -1959,8 +1984,11 @@ test_pit:
         //GTP_GPIO_AS_INPUT(GTP_INT_PORT);
         gpio_direction_input(ts->irq_pin);
         //s3c_gpio_setpull(pin, S3C_GPIO_PULL_NONE);
-        
-        GTP_GPIO_FREE(ts->irq_pin);
+
+        /* RG DS: the INT line stays requested in polling mode. The sleep
+         * command needs it driven low first and the wake needs it driven
+         * high, so the pin is still ours to steer (it was gpio_free'd here
+         * before, and the sleep/wake helpers then wrote an unowned gpio). */
 
         hrtimer_init(&ts->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
         ts->timer.function = goodix_ts_timer_handler;
@@ -1993,7 +2021,9 @@ static int goodix_ts_early_suspend(struct tp_device *tp_d)
     ts = container_of(tp_d, struct goodix_ts_data, tp);
     GTP_DEBUG_FUNC();
 
-    GTP_INFO("System suspend.");
+    if (ts->gtp_is_suspend)
+        return 0;
+    dev_info(&ts->client->dev, "gt9xx: panel off, touch controller to sleep\n");
 
     ts->gtp_is_suspend = 1;
 #if GTP_ESD_PROTECT
@@ -2011,6 +2041,9 @@ static int goodix_ts_early_suspend(struct tp_device *tp_d)
     {
         hrtimer_cancel(&ts->timer);
     }
+    /* RG DS: a poll queued before the flag flipped may still be on the bus;
+     * let it finish so the sleep command below is not interleaved with it. */
+    cancel_work_sync(&ts->work);
     ret = gtp_enter_sleep(ts);
 #endif
     if (ret < 0)
@@ -2044,7 +2077,9 @@ static int goodix_ts_early_resume(struct tp_device *tp_d)
     ts = container_of(tp_d, struct goodix_ts_data, tp);
     GTP_DEBUG_FUNC();
 
-    GTP_INFO("System resume.");
+    if (!ts->gtp_is_suspend)
+        return 0;
+    dev_info(&ts->client->dev, "gt9xx: panel on, waking touch controller\n");
 
 	reg = regulator_enable(ts->tp_regulator);
 	if (reg < 0)
@@ -2072,6 +2107,10 @@ static int goodix_ts_early_resume(struct tp_device *tp_d)
         gtp_send_cfg(ts->client);
     }
 
+    /* Cleared before the poll timer is armed, or its first callback would
+     * see the suspend flag and stop polling for good. */
+    ts->gtp_is_suspend = 0;
+
     if (ts->use_irq)
     {
         gtp_irq_enable(ts);
@@ -2081,12 +2120,39 @@ static int goodix_ts_early_resume(struct tp_device *tp_d)
         hrtimer_start(&ts->timer, ktime_set(0, 30 * 1000000), HRTIMER_MODE_REL);
     }
 
-    ts->gtp_is_suspend = 0;
 #if GTP_ESD_PROTECT
     gtp_esd_switch(ts->client, SWITCH_ON);
 #endif
 
 	return 0;
+}
+
+/* RG DS: the DRM panel driver tells us when the panel is about to go dark
+ * and when it is lit again. The controller sleeps across the dark period
+ * (its baseline is frozen, nothing polls a suspended bus) and wakes only once
+ * the panel is on, so the baseline it builds matches the lit panel and the
+ * first touch after a wake registers at once. */
+static int gtp_panel_notifier_call(struct notifier_block *nb, unsigned long val, void *data)
+{
+    struct goodix_ts_data *ts = container_of(nb, struct goodix_ts_data, panel_nb);
+    enum rockchip_panel_event event = (enum rockchip_panel_event)val;
+
+    if (!ts->panel_ready)
+        return NOTIFY_DONE;
+
+    mutex_lock(&ts->tp.ops_lock);
+    if (event == PANEL_PRE_DISABLE)
+    {
+        ts->tp.status = FB_BLANK_POWERDOWN;
+        goodix_ts_early_suspend(&ts->tp);
+    }
+    else if (event == PANEL_ENABLED)
+    {
+        ts->tp.status = FB_BLANK_UNBLANK;
+        goodix_ts_early_resume(&ts->tp);
+    }
+    mutex_unlock(&ts->tp.ops_lock);
+    return NOTIFY_OK;
 }
 
 /*******************************************************
@@ -2182,6 +2248,7 @@ static s8 gtp_request_input_dev(struct i2c_client *client,
     ts->tp.tp_resume = goodix_ts_early_resume;
     ts->tp.tp_suspend = goodix_ts_early_suspend;
     tp_register_fb(&ts->tp);
+    ts->panel_ready = true;
 
 #if GTP_WITH_PEN
     gtp_pen_init(ts);
@@ -2700,8 +2767,25 @@ static int goodix_ts_probe(struct i2c_client *client, const struct i2c_device_id
     
     if (!np) {
     	dev_err(&client->dev, "no device tree\n");
+    	kfree(ts);
     	return -EINVAL;
     }
+
+    /* RG DS: bind to the panel's notifier first. The panel may not have
+     * registered yet at this point of boot, in which case we come back later
+     * rather than run without it (the controller would then never sleep). */
+    ts->panel_nb.notifier_call = gtp_panel_notifier_call;
+    ret = devm_rockchip_panel_notifier_register_client(&client->dev, &ts->panel_nb);
+    if (ret == -EPROBE_DEFER) {
+        kfree(ts);
+        return -EPROBE_DEFER;
+    }
+    ts->panel_notifier = (ret == 0);
+    if (ret == 0)
+        dev_info(&client->dev, "gt9xx: following the panel for sleep and wake\n");
+    else
+        dev_info(&client->dev, "gt9xx: no panel notifier (%d), touch stays awake across sleep\n", ret);
+
     if (of_property_read_u32(np, "tp-size", &val)) {
     	dev_err(&client->dev, "no max-x defined\n");
     	return -EINVAL;
@@ -2972,6 +3056,8 @@ static void goodix_ts_remove(struct i2c_client *client)
         else
         {
             hrtimer_cancel(&ts->timer);
+            cancel_work_sync(&ts->work);
+            GTP_GPIO_FREE(ts->irq_pin);
         }
 		GTP_INFO("GTP driver removing...");
 		i2c_set_clientdata(client, NULL);
