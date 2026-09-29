@@ -34,6 +34,7 @@
 #include <linux/of_gpio.h>
 #include <linux/gpio.h>
 #include <linux/slab.h>
+#include <linux/rockchip-panel-notifier.h>
 #include "../tp_suspend.h"
 
 //#include <mach/gpio.h>
@@ -127,6 +128,13 @@ struct goodix_ts_data {
 	u8 cfg_file_num;
 //add struct tp_device by Sam
     struct  tp_device  tp;
+    /* RG DS: the DRM stack never raises FB_EVENT_BLANK, so the panel driver's
+     * own notifier (rockchip,panel-notifier in the DT) is what suspends the
+     * controller before the panel goes dark and wakes it after the panel is
+     * lit again. panel_ready gates the callback until probe has finished. */
+    struct notifier_block panel_nb;
+    bool panel_notifier;
+    bool panel_ready;
 
     //add by Daniel(yc)
     int irq;

@@ -1086,6 +1086,9 @@
 		com_lcd_tp = <0>;	
 		pinctrl-names = "default";
 		pinctrl-0 = <&touch0_gt_gpio>;
+		/* the panel driver suspends the controller before the panel goes
+		 * dark and wakes it once the panel is lit again */
+		rockchip,panel-notifier = <&dsi0_panel>;
 		//status = "disabled";
 		//rockchip,panel-notifier = <&dsi0_panel>;
 	};
