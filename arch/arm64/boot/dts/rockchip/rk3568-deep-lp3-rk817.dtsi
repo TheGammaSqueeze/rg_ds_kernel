@@ -397,8 +397,21 @@
 		poll-interval = <100>;
 		rockchip,format = "i2s";
 		rockchip,mclk-fs = <256>;
-		rockchip,cpu = <&i2s1_8ch>;
-		rockchip,codec = <&rk817_codec>;
+		/* One card for both outputs: the jack codec on I2S1 and the two
+		 * speaker amps on I2S3 hang off a mirrored multi-dais link, so a
+		 * single PCM (and the audio HAL's one MMAP stream) reaches both.
+		 * The jack decides where it is heard: a plug switches the amps off
+		 * and the codec to the headphone path, unplugging reverses both.
+		 * The HAL only writes Playback Path for its mixer streams (never
+		 * for MMAP) and never resets it on standby, so this holds. */
+		rockchip,cpu = <&audio_dais>;
+		rockchip,codec = <&rk817_codec>, <&aw883xx1>, <&aw883xx2>;
+		rockchip,jack-in-controls = "Left aw_dev_0_switch", "Disable",
+					    "Right aw_dev_1_switch", "Disable",
+					    "Playback Path", "HP_NO_MIC";
+		rockchip,jack-out-controls = "Left aw_dev_0_switch", "Enable",
+					     "Right aw_dev_1_switch", "Enable",
+					     "Playback Path", "SPK";
 		pinctrl-names = "default";
 		pinctrl-0 = <&hp_det>;
 		play-pause-key {
@@ -422,8 +435,19 @@
 #endif
 	};
 
-	aw883xx_sound: aw883x-sound {
+	audio_dais: audio-dais {
 		status = "okay";
+		compatible = "rockchip,multi-dais";
+		dais = <&i2s1_8ch>, <&i2s3_2ch>;
+		capture,channel-mapping = <2 0>;
+		playback,channel-mapping = <2 2>;
+		rockchip,playback-mirror;
+		mclk-fs-mapping = <256 256>;
+	};
+
+	aw883xx_sound: aw883x-sound {
+		/* folded into rk817-sound above (one card for jack and speakers) */
+		status = "disabled";
 		compatible = "rockchip,multicodecs-card";
 		/* Must be exactly "rockchipaw882xx": the RK primary audio HAL selects the
 		 * speaker PCM card by scanning /proc/asound/cardN/id for its SPEAKER_OUT_NAME
@@ -1227,6 +1251,7 @@
 &i2s1_8ch {
 	status = "okay";
 	rockchip,trcm-sync-tx-only;
+	rockchip,no-dmaengine;	/* DMA owned by audio_dais */
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2s1m0_sclktx
 		     &i2s1m0_lrcktx
@@ -1243,6 +1268,7 @@
 	 * the fix belongs in the amp's power-up sequencing, not in a permanent
 	 * clock. */
 	rockchip,trcm-sync-tx-only;
+	rockchip,no-dmaengine;	/* DMA owned by audio_dais */
 	i2s-lrck-gpio = <&gpio4 RK_PC4 GPIO_ACTIVE_HIGH>; /* i2s3m1_lrck */
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2s3m1_sclk
