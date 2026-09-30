@@ -92,6 +92,10 @@ struct rk817_codec_priv {
 	bool resume_path;
 
 	bool out_l2spk_r2hp;
+	/* True while the DAC is unmuted, so a Playback Path change knows whether
+	 * a stream is running and the speaker/headphone PAs have to be re-gated
+	 * for the new path right away. */
+	bool dac_unmuted;
 	long int playback_path;
 	long int capture_path;
 
@@ -628,6 +632,8 @@ static SOC_ENUM_SINGLE_DECL(rk817_capture_path_type,
 static SOC_ENUM_SINGLE_DECL(rk817_resume_path_type,
 	0, 0, rk817_binary_mode);
 
+static void rk817_select_output_path(struct snd_soc_component *component);
+
 static int rk817_playback_path_config(struct snd_soc_component *component,
 				      long pre_path, long target_path)
 {
@@ -813,6 +819,7 @@ static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+	int ret;
 
 	if (rk817->playback_path == ucontrol->value.integer.value[0]) {
 		DBG("%s : playback_path is not changed!\n",
@@ -820,8 +827,19 @@ static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
 		return 0;
 	}
 
-	return rk817_playback_path_config(component, rk817->playback_path,
-					  ucontrol->value.integer.value[0]);
+	ret = rk817_playback_path_config(component, rk817->playback_path,
+					ucontrol->value.integer.value[0]);
+	if (ret < 0)
+		return ret;
+
+	/* The speaker and headphone PAs are otherwise only gated when the DAC is
+	 * muted or unmuted, which happens at stream start and stop. Without this
+	 * a path change under a running stream left the old PA enabled, so
+	 * switching to headphones mid-playback kept the speaker on. */
+	if (rk817->dac_unmuted)
+		rk817_select_output_path(component);
+
+	return 1;
 }
 
 static int rk817_capture_path_config(struct snd_soc_component *component,
@@ -1188,12 +1206,73 @@ static int rk817_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
+/*
+ * Point the analogue output at whatever rk817->playback_path currently says:
+ * power the matching DAC halves and gate the speaker and headphone PAs. The
+ * ordering within each case is the stock one (the external PAs come up last on
+ * the speaker paths and go down first on the headphone path) because it is what
+ * keeps the switch free of pops.
+ *
+ * This runs both when the DAC is unmuted for a new stream and when the path
+ * changes underneath a stream that is already running.
+ */
+static void rk817_select_output_path(struct snd_soc_component *component)
+{
+	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+
+	switch (rk817->playback_path) {
+	case SPK_PATH:
+	case RING_SPK:
+		if (rk817->out_l2spk_r2hp) {
+			snd_soc_component_write(component, RK817_CODEC_ADAC_CFG1,
+					PWD_DACBIAS_ON | PWD_DACD_ON |
+					PWD_DACL_ON | PWD_DACR_ON);
+		} else if (!rk817->use_ext_amplifier) {
+			snd_soc_component_write(component, RK817_CODEC_ADAC_CFG1,
+					PWD_DACBIAS_ON | PWD_DACD_ON |
+					PWD_DACL_DOWN | PWD_DACR_DOWN);
+		} else {
+			snd_soc_component_write(component, RK817_CODEC_ADAC_CFG1,
+					PWD_DACBIAS_ON | PWD_DACD_DOWN |
+					PWD_DACL_ON | PWD_DACR_ON);
+		}
+		rk817_codec_ctl_gpio(rk817, CODEC_SET_SPK, 1);
+		rk817_codec_ctl_gpio(rk817, CODEC_SET_HP, 0);
+		aw87391_speakers_enable();
+		break;
+	case HP_PATH:
+	case HP_NO_MIC:
+	case RING_HP:
+	case RING_HP_NO_MIC:
+		snd_soc_component_write(component, RK817_CODEC_ADAC_CFG1,
+				PWD_DACBIAS_ON | PWD_DACD_DOWN |
+				PWD_DACL_ON | PWD_DACR_ON);
+		rk817_codec_ctl_gpio(rk817, CODEC_SET_SPK, 0);
+		aw87391_speakers_disable();
+		rk817_codec_ctl_gpio(rk817, CODEC_SET_HP, 1);
+		break;
+	case SPK_HP:
+	case RING_SPK_HP:
+		snd_soc_component_write(component, RK817_CODEC_ADAC_CFG1,
+				PWD_DACBIAS_ON | PWD_DACD_ON |
+				PWD_DACL_ON | PWD_DACR_ON);
+		rk817_codec_ctl_gpio(rk817, CODEC_SET_SPK, 1);
+		rk817_codec_ctl_gpio(rk817, CODEC_SET_HP, 1);
+		aw87391_speakers_enable();
+		break;
+	default:
+		break;
+	}
+}
+
 static int rk817_digital_mute_dac(struct snd_soc_dai *dai, int mute, int stream)
 {
 	struct snd_soc_component *component = dai->component;
 	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
 
 	DBG("%s %d\n", __func__, mute);
+
+	rk817->dac_unmuted = !mute;
 
 	if (mute) {
 		rk817_codec_ctl_gpio(rk817, CODEC_SET_SPK, 0);
@@ -1215,54 +1294,7 @@ static int rk817_digital_mute_dac(struct snd_soc_dai *dai, int mute, int stream)
 					      RK817_CODEC_DDAC_MUTE_MIXCTL,
 					      DACMT_ENABLE, DACMT_DISABLE);
 
-		switch (rk817->playback_path) {
-		case SPK_PATH:
-		case RING_SPK:
-			if (rk817->out_l2spk_r2hp) {
-				snd_soc_component_write(component, RK817_CODEC_ADAC_CFG1,
-						PWD_DACBIAS_ON | PWD_DACD_ON |
-						PWD_DACL_ON | PWD_DACR_ON);
-			} else if (!rk817->use_ext_amplifier) {
-				snd_soc_component_write(component, RK817_CODEC_ADAC_CFG1,
-						PWD_DACBIAS_ON | PWD_DACD_ON |
-						PWD_DACL_DOWN | PWD_DACR_DOWN);
-			} else {
-				snd_soc_component_write(component, RK817_CODEC_ADAC_CFG1,
-						PWD_DACBIAS_ON | PWD_DACD_DOWN |
-						PWD_DACL_ON | PWD_DACR_ON);
-			}
-			rk817_codec_ctl_gpio(rk817, CODEC_SET_SPK, 1);
-			rk817_codec_ctl_gpio(rk817, CODEC_SET_HP, 0);
-			/* Stock: enable the external PAs LAST, after the DAC is
-			 * unmuted and the spk gpio is raised (avoids the pop). */
-			aw87391_speakers_enable();
-			break;
-		case HP_PATH:
-		case HP_NO_MIC:
-		case RING_HP:
-		case RING_HP_NO_MIC:
-			snd_soc_component_write(component, RK817_CODEC_ADAC_CFG1,
-					PWD_DACBIAS_ON | PWD_DACD_DOWN |
-					PWD_DACL_ON | PWD_DACR_ON);
-			rk817_codec_ctl_gpio(rk817, CODEC_SET_SPK, 0);
-			/* HP-only path: stock disables the speaker PAs here so a
-			 * speaker->headphone switch mid-stream turns them off. */
-			aw87391_speakers_disable();
-			rk817_codec_ctl_gpio(rk817, CODEC_SET_HP, 1);
-			break;
-		case SPK_HP:
-		case RING_SPK_HP:
-			snd_soc_component_write(component, RK817_CODEC_ADAC_CFG1,
-					PWD_DACBIAS_ON | PWD_DACD_ON |
-					PWD_DACL_ON | PWD_DACR_ON);
-			rk817_codec_ctl_gpio(rk817, CODEC_SET_SPK, 1);
-			rk817_codec_ctl_gpio(rk817, CODEC_SET_HP, 1);
-			/* Enable the external PAs LAST, as in the SPK path. */
-			aw87391_speakers_enable();
-			break;
-		default:
-			break;
-		}
+		rk817_select_output_path(component);
 	}
 
 	return 0;

@@ -7875,6 +7875,11 @@
 		rockchip,codec = <0x134>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&hp_det>;
+		/* Move the output with the jack in the kernel, so it happens even
+		 * for a stream the policy layer can no longer re-route (an AAudio
+		 * MMAP stream owns the one playback substream directly). */
+		rockchip,jack-in-controls = "Playback Path", "HP_NO_MIC";
+		rockchip,jack-out-controls = "Playback Path", "SPK";
 
 		play-pause-key {
 			label = "playpause";
