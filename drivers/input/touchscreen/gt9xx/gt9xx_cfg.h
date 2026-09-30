@@ -18,6 +18,21 @@
 #ifndef _GOODIX_GT9XX_CFG_H_
 #define _GOODIX_GT9XX_CFG_H_
 
+/*
+ * RG DS Plus (1024x768 GT911). Read out of the panel vendor's own firmware and
+ * confirmed byte for byte against a working unit's controller: config version
+ * 0x5b, 1024x768, 5 touch points, 15+26 drive and 15 sense channels.
+ *
+ * The generic Goodix sample below (gtp_dat_gt11) describes a 24 drive / 5 sense
+ * tablet digitiser at 4096x4096. Writing that over this panel's calibration
+ * leaves touches landing short of where they are made, progressively worse
+ * toward the far edge. Units whose controller reports a config version of 90 or
+ * more are never written to and so were never affected; the ones below 90 were.
+ */
+static u8 gtp_dat_gt911_1024x768[] = {
+	#include "RGDSPLUS_GT911_1024x768_V5B.cfg"
+};
+
 /* CFG for GT911 */
 static u8 gtp_dat_gt11[] = {
 	/* <1200, 1920>*/

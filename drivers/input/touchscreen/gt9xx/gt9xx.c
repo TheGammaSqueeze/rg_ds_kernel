@@ -1500,8 +1500,22 @@ static s32 gtp_init_panel(struct goodix_ts_data *ts)
     }
     
     if (bgt911) {
+	/*
+	 * tp-size = 911 covers both the RG DS (640x480) and the RG DS Plus
+	 * (1024x768), so pick by the panel size in the device tree. Only the
+	 * Plus panel's real config is known (taken from the vendor firmware and
+	 * verified against a working controller); everything else keeps the
+	 * previous behaviour.
+	 */
+	if (ts->dt_max_x == 1024 && ts->dt_max_y == 768) {
+		send_cfg_buf[0] = gtp_dat_gt911_1024x768;
+		cfg_info_len[0] = CFG_GROUP_LEN(gtp_dat_gt911_1024x768);
+		GTP_ERROR("gt9xx: using the 1024x768 panel config (v0x%02x)",
+			  gtp_dat_gt911_1024x768[0]);
+	} else {
     	send_cfg_buf[0] = gtp_dat_gt11;
 		cfg_info_len[0] =  CFG_GROUP_LEN(gtp_dat_gt11);
+	}
     }
 
     if (bgt9110) {
@@ -2864,11 +2878,13 @@ static int goodix_ts_probe(struct i2c_client *client, const struct i2c_device_id
     	return -EINVAL;
     }
     //ts->abs_x_max = val;
+    ts->dt_max_x = val;
     if (of_property_read_u32(np, "max-y", &val)) {
     	dev_err(&client->dev, "no max-y defined\n");
     	return -EINVAL;
     }
     //ts->abs_y_max = val;
+    ts->dt_max_y = val;
     if (of_property_read_u32(np, "configfile-num", &val)) {
 	    ts->cfg_file_num = 0;
     } else {

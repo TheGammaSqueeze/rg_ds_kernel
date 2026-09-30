@@ -115,6 +115,11 @@ struct goodix_ts_data {
      * relative to gt9xx-0; the orientation flags are global so this is the
      * per-panel correction. */
     bool flip_180;
+    /* Panel size from the device tree ("max-x"/"max-y"). tp-size alone does
+     * not identify the panel (911 covers both boards), so this is what picks
+     * the right config group. 0 = not specified. */
+    u16 dt_max_x;
+    u16 dt_max_y;
     u8  max_touch_num;
     u8  int_trigger_type;
     u8  green_wake_mode;
