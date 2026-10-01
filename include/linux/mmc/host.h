@@ -387,6 +387,14 @@ struct mmc_host {
 
 	u32			caps2;		/* More host capabilities */
 
+	/*
+	 * Speed capabilities the SD fallback ladder has taken out of caps
+	 * because the card could not actually run them. Kept so the
+	 * restriction survives a re-init of the same card (resume, reset) and
+	 * is handed back when the card goes away. Zero when nothing is masked.
+	 */
+	u32			sd_fallback_masked_caps;
+
 #define MMC_CAP2_BOOTPART_NOACC	(1 << 0)	/* Boot partition no access */
 #define MMC_CAP2_FULL_PWR_CYCLE	(1 << 2)	/* Can do full power cycle */
 #define MMC_CAP2_FULL_PWR_CYCLE_IN_SUSPEND (1 << 3) /* Can do full power cycle in suspend */

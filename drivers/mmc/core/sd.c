@@ -641,6 +641,41 @@ static bool mmc_sd_use_tuning(struct mmc_card *card)
 	return false;
 }
 
+static void mmc_sd_restore_caps(struct mmc_host *host);
+
+/*
+ * Second line of defence: check the negotiated mode can move a real sector.
+ *
+ * The primary signal is the tuning result, which is deterministic. This catches
+ * a mode that tuned but still cannot transfer, turning it into a recoverable
+ * init failure that the caller answers by retrying a rung slower.
+ *
+ * Note what this cannot see. A wrong DDR sampling edge can deliver every bit
+ * correctly and still assemble the bytes in the wrong order, and because the
+ * CRC is checked on the serial stream the transfer completes with no error at
+ * all. Such a mode passes this check, which is precisely why the tuning result
+ * is not discarded and this is not relied on alone.
+ */
+static int mmc_sd_verify_access(struct mmc_card *card)
+{
+	void *buf;
+	int err;
+
+	buf = kmalloc(512, GFP_KERNEL);
+	if (!buf)
+		return 0;	/* cannot check; do not condemn the card for it */
+
+	err = mmc_send_adtc_data(card, card->host, MMC_READ_SINGLE_BLOCK, 0,
+				 buf, 512);
+	kfree(buf);
+
+	if (err)
+		pr_warn("%s: cannot read sector 0 in the negotiated mode (%d)\n",
+			mmc_hostname(card->host), err);
+
+	return err;
+}
+
 /*
  * UHS-I specific initialization procedure
  */
@@ -694,11 +729,27 @@ static int mmc_sd_init_uhs_card(struct mmc_card *card)
 		 * difference between v3.00 and 3.01 spec means that CMD19
 		 * tuning is also available for DDR50 mode.
 		 */
-		if (err && card->host->ios.timing == MMC_TIMING_UHS_DDR50) {
-			pr_warn("%s: ddr50 tuning failed\n",
+		/*
+		 * A DDR50 tuning failure used to be discarded here, on the
+		 * grounds that CMD19 tuning is optional for DDR50 so the card
+		 * should not be rejected for it. That is true of the card and
+		 * wrong about the host: when the sweep finds no good sample
+		 * point, this controller is genuinely unable to latch DDR50
+		 * reliably, and carrying on produces either I/O errors on
+		 * sector 0 or, worse, transfers that report success while
+		 * handing back every 16-bit word byte-swapped. The hardware
+		 * checks the CRC on the serial stream, so a byte-assembly
+		 * error downstream of it is invisible: no error is ever
+		 * reported and the corruption is silent.
+		 *
+		 * Report the failure instead and let the caller retry at a
+		 * slower mode that needs no tuning. Keeping the error is what
+		 * makes the fallback deterministic, and silent corruption is a
+		 * far worse outcome than a rung of lost throughput.
+		 */
+		if (err && card->host->ios.timing == MMC_TIMING_UHS_DDR50)
+			pr_warn("%s: ddr50 tuning failed, this mode is not usable\n",
 				mmc_hostname(card->host));
-			err = 0;
-		}
 	}
 
 out:
@@ -1507,14 +1558,31 @@ retry:
 	if (!v18_fixup_failed && !mmc_host_is_spi(host) && mmc_host_uhs(host) &&
 	    mmc_sd_card_using_v18(card) &&
 	    host->ios.signal_voltage != MMC_SIGNAL_VOLTAGE_180) {
-		if (mmc_host_set_uhs_voltage(host) ||
-		    mmc_sd_init_uhs_card(card)) {
+		/*
+		 * Only a failure to get the host onto 1.8V is a reason to give
+		 * up on UHS and start over at 3.3V. These two failures used to
+		 * be treated alike, which threw away two rungs at once: a card
+		 * whose DDR50 simply does not work came back at 3.3V, stopped
+		 * reporting S18A, skipped UHS altogether and landed on high
+		 * speed, when SDR25 needs no tuning and would have worked.
+		 */
+		if (mmc_host_set_uhs_voltage(host)) {
 			v18_fixup_failed = true;
 			mmc_power_cycle(host, ocr);
 			if (!oldcard)
 				mmc_remove_card(card);
 			goto retry;
 		}
+
+		/*
+		 * The voltage is right and the mode is not. Report it so the
+		 * caller can mask that mode and try the next rung down, which
+		 * is still a UHS one.
+		 */
+		err = mmc_sd_init_uhs_card(card);
+		if (err)
+			goto free_card;
+
 		goto cont;
 	}
 
@@ -1551,6 +1619,16 @@ retry:
 		}
 	}
 cont:
+	/*
+	 * The bus mode, clock and width are final at this point and nothing has
+	 * moved data yet. Check that the mode works before anything depends on
+	 * it, so an unusable one is reported as an init failure that the caller
+	 * can retry more slowly.
+	 */
+	err = mmc_sd_verify_access(card);
+	if (err)
+		goto free_card;
+
 	if (!oldcard) {
 		/* Read/parse the extension registers. */
 		err = sd_read_ext_regs(card);
@@ -1600,6 +1678,7 @@ static void mmc_sd_remove(struct mmc_host *host)
 {
 	mmc_remove_card(host->card);
 	host->card = NULL;
+	mmc_sd_restore_caps(host);
 }
 
 /*
@@ -1871,6 +1950,96 @@ static const struct mmc_bus_ops mmc_sd_ops = {
 };
 
 /*
+ * Speed rungs, fastest first. Each entry lists the capabilities to take away
+ * for that attempt, so entry 0 changes nothing and every later entry is a
+ * superset of the one before it. On this hardware the rungs come out as:
+ *
+ *	0	UHS DDR50	50 MHz, double rate, CMD19 tuning optional
+ *	1	UHS SDR25	50 MHz, single rate, no tuning
+ *	2	high speed	50 MHz, no UHS signalling
+ *	3	default speed	25 MHz
+ *
+ * Masking SDR104 and SDR50 alongside DDR50 keeps the ladder honest on a host
+ * that advertises them, since the selector would otherwise pick a mode above
+ * the rung we are aiming for.
+ */
+static const u32 sd_fallback_rungs[] = {
+	0,
+	MMC_CAP_UHS_SDR104 | MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_DDR50,
+	MMC_CAP_UHS_SDR104 | MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_DDR50 |
+		MMC_CAP_UHS_SDR25 | MMC_CAP_UHS_SDR12,
+	MMC_CAP_UHS_SDR104 | MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_DDR50 |
+		MMC_CAP_UHS_SDR25 | MMC_CAP_UHS_SDR12 | MMC_CAP_SD_HIGHSPEED,
+};
+
+/*
+ * Give the capabilities back that a previous fallback took away, so the next
+ * card is probed at full speed rather than inheriting a restriction earned by
+ * the card before it.
+ */
+static void mmc_sd_restore_caps(struct mmc_host *host)
+{
+	if (host->sd_fallback_masked_caps) {
+		host->caps |= host->sd_fallback_masked_caps;
+		host->sd_fallback_masked_caps = 0;
+	}
+}
+
+/*
+ * Initialise the card at the fastest mode it can actually sustain.
+ *
+ * Try the rungs in order and stop at the first one that completes init, which
+ * now includes reading a real sector. Only an init failure drives the step
+ * down; a card that is simply absent or broken fails every rung and is
+ * reported as before, just after a few more attempts.
+ *
+ * The winning mask stays applied for as long as the card is present, because a
+ * later re-init of the same card (resume, or a reset after an error) has to
+ * land on the mode that was proven to work rather than climbing back to one
+ * that did not.
+ */
+static int mmc_sd_init_card_fallback(struct mmc_host *host, u32 rocr)
+{
+	u32 full_caps = host->caps | host->sd_fallback_masked_caps;
+	int err = -EIO;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(sd_fallback_rungs); i++) {
+		u32 mask = full_caps & sd_fallback_rungs[i];
+
+		/* Nothing left to take away: this rung repeats the last one. */
+		if (i && mask == (full_caps & sd_fallback_rungs[i - 1]))
+			continue;
+
+		host->caps = full_caps & ~mask;
+		host->sd_fallback_masked_caps = mask;
+
+		err = mmc_sd_init_card(host, rocr, NULL);
+		if (!err) {
+			if (mask)
+				pr_warn("%s: stepped down to a slower SD mode, timing %u at %uHz, because a faster one could not transfer\n",
+					mmc_hostname(host), host->ios.timing,
+					host->ios.clock);
+			return 0;
+		}
+
+		/* Out of rungs: report the failure rather than power cycle again. */
+		if (i == ARRAY_SIZE(sd_fallback_rungs) - 1)
+			break;
+
+		pr_warn("%s: SD init failed (%d) at timing %u, retrying a rung slower\n",
+			mmc_hostname(host), err, host->ios.timing);
+
+		/* A fresh attempt needs the card back at its power-on state. */
+		mmc_power_cycle(host, rocr);
+	}
+
+	mmc_sd_restore_caps(host);
+
+	return err;
+}
+
+/*
  * Starting point for SD card init.
  */
 int mmc_attach_sd(struct mmc_host *host)
@@ -1916,9 +2085,11 @@ int mmc_attach_sd(struct mmc_host *host)
 	}
 
 	/*
-	 * Detect and init the card.
+	 * Detect and init the card, dropping a rung at a time until a mode
+	 * actually carries data. A good card succeeds on the first attempt and
+	 * keeps every capability, so the fast path is unchanged.
 	 */
-	err = mmc_sd_init_card(host, rocr, NULL);
+	err = mmc_sd_init_card_fallback(host, rocr);
 	if (err)
 		goto err;
 
