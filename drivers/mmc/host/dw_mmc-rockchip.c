@@ -403,6 +403,24 @@ static int dw_mci_rk3288_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
 
 	if (range_count == 0) {
 		dev_warn(host->dev, "All phases bad!");
+		/*
+		 * The sweep above moved the sample clock as it probed, so on the
+		 * way out it is sitting on whichever phase was tried last, which
+		 * is by definition one that did not work. Put the default back,
+		 * exactly as the all-phases-work path below does.
+		 *
+		 * This matters because a DDR50 tuning failure is not fatal: the
+		 * core ignores it, since CMD19 tuning is optional for DDR50. The
+		 * card therefore stays at DDR50 with a known-bad phase latched,
+		 * and every transfer fails including sector 0, which leaves the
+		 * block layer unable to read the partition table. Restoring the
+		 * default phase gives that card the same sample point every
+		 * untuned mode uses, which is usually serviceable.
+		 */
+		if (priv->usrid == USRID_INTER_PHASE)
+			rockchip_mmc_set_phase(host, true, priv->default_sample_phase);
+		else
+			clk_set_phase(priv->sample_clk, priv->default_sample_phase);
 		ret = -EIO;
 		goto free;
 	}
