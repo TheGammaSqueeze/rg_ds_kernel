@@ -1164,6 +1164,8 @@ static void rk805_of_property_prepare(struct rk808 *rk808, struct device *dev)
 struct rk817_reboot_data_t {
 	struct rk808 *rk808;
 	struct notifier_block reboot_notifier;
+	/* Board says the saved POWER_EN values are not ours to replay. */
+	bool not_save_power_en;
 };
 
 static struct rk817_reboot_data_t rk817_reboot_data;
@@ -1185,6 +1187,30 @@ static int rk817_reboot_notifier_handler(struct notifier_block *nb,
 
 	regmap_read(data->rk808->regmap, RK817_POWER_EN_SAVE0,
 		    &power_en_active0);
+	/*
+	 * POWER_EN_SAVE0/1 are battery backed scratch registers that the
+	 * bootloader is supposed to fill in. This board sets
+	 * "not-save-power-en", which the vendor U-Boot honours by never
+	 * writing them, so anything found here came from some other
+	 * bootloader and describes that bootloader's rail layout, not ours.
+	 *
+	 * Replaying it is destructive: the values a mainline U-Boot leaves
+	 * behind (0x99=0x7f, 0xa4=0x00) work out to POWER_EN2=0xf0, which
+	 * switches off LDO5-8, and on this board that is vccio_sd,
+	 * vcc3v3_pmu, vcc_1v8 and vcc1v8_dvp. Cutting vcc3v3_pmu and vcc_1v8
+	 * under the running SoC kills it mid-shutdown: the device ends up
+	 * with no panels, no backlight and no LEDs, and because the scratch
+	 * registers survive, it repeats on every reboot and power off until
+	 * someone holds power for 12 s or pulls the battery.
+	 *
+	 * Honour the same property the bootloader does and leave the rails
+	 * alone.
+	 */
+	if (data->not_save_power_en && power_en_active0 != 0) {
+		dev_info(dev, "reboot: ignoring stale POWER_EN save (0x%02x)\n",
+			 power_en_active0);
+		power_en_active0 = 0;
+	}
 	if (power_en_active0 != 0) {
 		regmap_read(data->rk808->regmap, RK817_POWER_EN_SAVE1,
 			    &power_en_active1);
@@ -1273,6 +1299,28 @@ static void rk817_of_property_prepare(struct rk808 *rk808, struct device *dev)
 	regmap_update_bits(rk808->regmap, RK817_SYS_CFG(3), msk, val);
 
 	dev_info(dev, "support pmic reset mode:%d,%d\n", ret, func);
+
+	rk817_reboot_data.not_save_power_en =
+		of_property_read_bool(np, "not-save-power-en");
+
+	/*
+	 * Clear the scratch registers at probe as well as ignoring them at
+	 * reboot. A device that was armed by a different bootloader is then
+	 * healed by the first boot of this kernel, rather than staying one
+	 * reboot away from a hang for as long as the battery holds charge.
+	 */
+	if (rk817_reboot_data.not_save_power_en) {
+		int save0 = 0, save1 = 0;
+
+		regmap_read(rk808->regmap, RK817_POWER_EN_SAVE0, &save0);
+		regmap_read(rk808->regmap, RK817_POWER_EN_SAVE1, &save1);
+		if (save0 || save1) {
+			dev_info(dev, "clearing stale POWER_EN save %02x/%02x\n",
+				 save0, save1);
+			regmap_write(rk808->regmap, RK817_POWER_EN_SAVE0, 0);
+			regmap_write(rk808->regmap, RK817_POWER_EN_SAVE1, 0);
+		}
+	}
 
 	rk817_reboot_data.rk808 = rk808;
 	rk817_reboot_data.reboot_notifier.notifier_call =
