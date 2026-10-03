@@ -65,6 +65,26 @@ extern void led_chargr_status(int charger);
 #define DEFAULT_CHRG_CURRENT	1400
 #define DEFAULT_CHRG_TERM_MODE	1
 #define DEFAULT_CHRG_TERM_CUR		150
+
+/*
+ * Charge current thermal throttle. The RK817 flags its own die passing the
+ * HOTDIE threshold (sys_cfg1, armed at 105C on these boards) as bit 4 of
+ * INT_STS_REG0. Poll it, back the charge current off one step while it keeps
+ * asserting, and climb back one step at a time once it has stayed clear.
+ */
+#define THERMAL_POLL_MS			5000
+#define THERMAL_IDLE_POLL_MS		20000	/* no charger present */
+#define THERMAL_COOL_POLLS		12	/* 60 s clear before stepping up */
+#define THERMAL_STEP_MA			500
+#define THERMAL_FLOOR_MA		1000
+#define THERMAL_SETTLE_MS		150	/* comparator settle after a threshold write */
+/*
+ * Die temperature bands from the four HOTDIE thresholds. The index is the
+ * number of thresholds the die is above, so 0 is below 85C and 4 is at or
+ * above 115C. Throttling starts at THERMAL_ACT_BAND, i.e. 105C and up.
+ */
+#define THERMAL_BAND_COUNT		5
+#define THERMAL_ACT_BAND		3
 #define SAMPLE_RES_10MR		10
 #define SAMPLE_RES_20MR		20
 #define SAMPLE_RES_DIV1		1
@@ -311,6 +331,12 @@ struct rk817_charger {
 	struct delayed_work host_work;
 	struct delayed_work discnt_work;
 	struct delayed_work irq_work;
+	/* Die temperature feedback: see rk817_charge_thermal_work(). */
+	struct delayed_work thermal_work;
+	u32 thermal_chrg_current;	/* mA actually programmed */
+	int thermal_cool_polls;		/* consecutive polls with the latch clear */
+	int die_band;			/* 0..4, see THERMAL_BAND_COUNT */
+	int thermal_action_band;	/* throttle at or above this band */
 	struct notifier_block bc_nb;
 	struct notifier_block cable_cg_nb;
 	struct notifier_block cable_host_nb;
@@ -385,7 +411,7 @@ static int rk817_charge_ac_get_property(struct power_supply *psy,
 		val->intval = charge->max_chrg_voltage * 1000;	/* uV */
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
-		val->intval = charge->max_chrg_current * 1000;	/* uA */
+		val->intval = charge->thermal_chrg_current * 1000;	/* uA */
 		break;
 	default:
 		ret = -EINVAL;
@@ -423,7 +449,7 @@ static int rk817_charge_usb_get_property(struct power_supply *psy,
 		val->intval = charge->max_chrg_voltage;
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
-		val->intval = charge->max_chrg_current;
+		val->intval = charge->thermal_chrg_current;
 		break;
 	default:
 		ret = -EINVAL;
@@ -781,6 +807,178 @@ static void rk817_charge_set_chrg_finish_condition(struct rk817_charger *charge)
 static int rk817_charge_online(struct rk817_charger *charge)
 {
 	return (charge->ac_in | charge->usb_in | charge->dc_in);
+}
+
+/*
+ * Keep the charge current inside what the PMIC die can dissipate.
+ *
+ * Nothing else here reacts to temperature. The charge current is programmed
+ * once at init and the CC/CV loop only tapers it on battery voltage, which
+ * arrives after the hot part of the charge, not during it. At 3000 mA in and
+ * up to 3500 mA into the cell the RK817 is the hottest part on the board, and
+ * there is no battery NTC to lean on either.
+ *
+ * The RK817 does have a die comparator: HOTDIE in sys_cfg1 (105C on these
+ * boards) sets bit 4 of INT_STS_REG0. The interrupt is masked, so nothing
+ * acks it and the bit is a sticky latch: it stays set from the moment the die
+ * crosses the threshold until it is written back. That is exactly the signal
+ * wanted here. Each poll reads it, treats "set" as hot, acks it, and only
+ * counts a cooled-down period once polls come back clear on their own.
+ *
+ * Hot: drop one step straight away and keep dropping on every hot poll, so a
+ * genuinely overheating part converges on the floor within half a minute.
+ * Clear: climb one step at a time, and only after a full cooling period, so
+ * the loop settles just under the threshold instead of hunting across it.
+ */
+static const char * const rk817_die_band_name[THERMAL_BAND_COUNT] = {
+	"<85", "85-95", "95-105", "105-115", ">=115",
+};
+
+/*
+ * Bracket the die temperature with the HOTDIE comparator.
+ *
+ * The comparator has four selectable thresholds and one sticky latch, so
+ * walking the threshold upwards and re-arming the latch at each step turns it
+ * into a 10C-band thermometer: the first threshold the die is NOT above is the
+ * top of its band. The threshold is left at the 105C action point and the
+ * latch cleared on the way out, so between sweeps the latch means what the
+ * throttle expects it to mean. Sleeping here is fine, this runs in a
+ * workqueue.
+ *
+ * Only bits 5:4 of sys_cfg1 are touched. Bit 6 is the thermal shutdown point
+ * (140C) and stays where the MFD core put it.
+ */
+static int rk817_charge_die_band(struct rk817_charger *charge)
+{
+	static const u8 sel[] = { RK817_HOTDIE_85, RK817_HOTDIE_95,
+				  RK817_HOTDIE_105, RK817_HOTDIE_115 };
+	unsigned int sts;
+	int b;
+
+	for (b = 0; b < ARRAY_SIZE(sel); b++) {
+		regmap_update_bits(charge->regmap, RK817_SYS_CFG(1),
+				   RK817_HOTDIE_TEMP_MSK, sel[b]);
+		regmap_write(charge->regmap, RK817_INT_STS_REG0,
+			     BIT(RK817_IRQ_HOTDIE));
+		msleep(THERMAL_SETTLE_MS);
+		if (regmap_read(charge->regmap, RK817_INT_STS_REG0, &sts))
+			break;
+		if (!(sts & BIT(RK817_IRQ_HOTDIE)))
+			break;
+	}
+
+	regmap_update_bits(charge->regmap, RK817_SYS_CFG(1),
+			   RK817_HOTDIE_TEMP_MSK, RK817_HOTDIE_105);
+	regmap_write(charge->regmap, RK817_INT_STS_REG0, BIT(RK817_IRQ_HOTDIE));
+
+	return b;	/* thresholds exceeded: 0 = below 85C .. 4 = 115C or more */
+}
+
+static ssize_t die_temp_band_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct rk817_charger *charge = dev_get_drvdata(dev);
+	int b = clamp(charge->die_band, 0, THERMAL_BAND_COUNT - 1);
+
+	return sprintf(buf, "%s\n", rk817_die_band_name[b]);
+}
+static DEVICE_ATTR_RO(die_temp_band);
+
+static ssize_t thermal_chrg_current_show(struct device *dev,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	struct rk817_charger *charge = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%u\n", charge->thermal_chrg_current);
+}
+static DEVICE_ATTR_RO(thermal_chrg_current);
+
+/*
+ * The band at which the throttle starts acting, 0..4 (below 85C .. 115C+).
+ * Defaults to the 105C band. Writable so the step-down path can be exercised
+ * on a device whose die never gets that hot: set it to 0 while charging and
+ * the loop must back the current off against the live charge.
+ */
+static ssize_t thermal_action_band_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct rk817_charger *charge = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%d\n", charge->thermal_action_band);
+}
+
+static ssize_t thermal_action_band_store(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf, size_t count)
+{
+	struct rk817_charger *charge = dev_get_drvdata(dev);
+	int v;
+
+	if (kstrtoint(buf, 0, &v) || v < 0 || v >= THERMAL_BAND_COUNT)
+		return -EINVAL;
+	charge->thermal_action_band = v;
+	charge->thermal_cool_polls = 0;
+	dev_info(charge->dev, "thermal: action band set to %d (%s and up)\n",
+		 v, rk817_die_band_name[v]);
+	return count;
+}
+static DEVICE_ATTR_RW(thermal_action_band);
+
+static void rk817_charge_thermal_work(struct work_struct *work)
+{
+	struct rk817_charger *charge = container_of(work, struct rk817_charger,
+						    thermal_work.work);
+	u32 cur = charge->thermal_chrg_current;
+	u32 want = cur;
+	int band, prev;
+	bool hot;
+
+	if (!rk817_charge_online(charge)) {
+		/* No charger: hand back the full limit so the next plug starts
+		 * clean, and poll slowly. */
+		if (cur != charge->max_chrg_current) {
+			charge->thermal_chrg_current = charge->max_chrg_current;
+			rk817_charge_set_chrg_current(charge,
+						      charge->thermal_chrg_current);
+		}
+		charge->thermal_cool_polls = 0;
+		queue_delayed_work(charge->usb_charger_wq, &charge->thermal_work,
+				   msecs_to_jiffies(THERMAL_IDLE_POLL_MS));
+		return;
+	}
+
+	prev = charge->die_band;
+	band = rk817_charge_die_band(charge);
+	charge->die_band = band;
+	if (band != prev)
+		dev_info(charge->dev, "thermal: die band %s -> %s\n",
+			 rk817_die_band_name[prev], rk817_die_band_name[band]);
+
+	hot = band >= charge->thermal_action_band;
+	if (hot) {
+		charge->thermal_cool_polls = 0;
+		if (cur > THERMAL_FLOOR_MA)
+			want = max_t(u32, cur - THERMAL_STEP_MA, THERMAL_FLOOR_MA);
+	} else if (cur < charge->max_chrg_current) {
+		if (++charge->thermal_cool_polls >= THERMAL_COOL_POLLS) {
+			charge->thermal_cool_polls = 0;
+			want = min_t(u32, cur + THERMAL_STEP_MA,
+				     charge->max_chrg_current);
+		}
+	}
+
+	if (want != cur) {
+		charge->thermal_chrg_current = want;
+		rk817_charge_set_chrg_current(charge, want);
+		dev_info(charge->dev,
+			 "thermal: die %s, charge current %u -> %u mA\n",
+			 rk817_die_band_name[band], cur, want);
+	}
+
+	queue_delayed_work(charge->usb_charger_wq, &charge->thermal_work,
+			   msecs_to_jiffies(THERMAL_POLL_MS));
 }
 
 static int rk817_charge_get_dsoc(struct rk817_charger *charge)
@@ -1323,7 +1521,11 @@ static void rk817_charge_pre_init(struct rk817_charger *charge)
 	rk817_charge_set_input_voltage(charge, charge->min_input_voltage);
 
 	rk817_charge_set_chrg_voltage(charge, charge->max_chrg_voltage);
-	rk817_charge_set_chrg_current(charge, charge->max_chrg_current);
+	charge->thermal_chrg_current = charge->max_chrg_current;
+	charge->thermal_cool_polls = 0;
+	charge->die_band = 0;
+	charge->thermal_action_band = THERMAL_ACT_BAND;
+	rk817_charge_set_chrg_current(charge, charge->thermal_chrg_current);
 
 	rk817_charge_set_chrg_finish_condition(charge);
 
@@ -1668,6 +1870,14 @@ static int rk817_charge_probe(struct platform_device *pdev)
 		goto irq_fail;
 	}
 
+	INIT_DELAYED_WORK(&charge->thermal_work, rk817_charge_thermal_work);
+	if (device_create_file(charge->dev, &dev_attr_die_temp_band) ||
+	    device_create_file(charge->dev, &dev_attr_thermal_chrg_current) ||
+	    device_create_file(charge->dev, &dev_attr_thermal_action_band))
+		dev_warn(charge->dev, "thermal: sysfs attributes not created\n");
+	queue_delayed_work(charge->usb_charger_wq, &charge->thermal_work,
+			   msecs_to_jiffies(THERMAL_POLL_MS));
+
 	if (charge->pdata->extcon) {
 		schedule_delayed_work(&charge->host_work, 0);
 		schedule_delayed_work(&charge->usb_work, 0);
@@ -1686,6 +1896,7 @@ irq_fail:
 	cancel_delayed_work_sync(&charge->usb_work);
 	cancel_delayed_work_sync(&charge->dc_work);
 	cancel_delayed_work_sync(&charge->irq_work);
+	cancel_delayed_work_sync(&charge->thermal_work);
 	destroy_workqueue(charge->usb_charger_wq);
 	destroy_workqueue(charge->dc_charger_wq);
 
@@ -1718,6 +1929,7 @@ static int  rk817_charge_pm_suspend(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct rk817_charger *charge = dev_get_drvdata(&pdev->dev);
 
+	cancel_delayed_work_sync(&charge->thermal_work);
 	charge->otg_slp_state = rk817_charge_get_otg_slp_state(charge);
 
 	/* enable sleep boost5v and otg5v */
@@ -1746,6 +1958,9 @@ static int rk817_charge_pm_resume(struct device *dev)
 	if (charge->otg_slp_state)
 		rk817_charge_otg_slp_enable(charge);
 
+	queue_delayed_work(charge->usb_charger_wq, &charge->thermal_work,
+			   msecs_to_jiffies(THERMAL_POLL_MS));
+
 	return 0;
 }
 #endif
@@ -1770,6 +1985,7 @@ static void rk817_charger_shutdown(struct platform_device *dev)
 	cancel_delayed_work_sync(&charge->usb_work);
 	cancel_delayed_work_sync(&charge->dc_work);
 	cancel_delayed_work_sync(&charge->irq_work);
+	cancel_delayed_work_sync(&charge->thermal_work);
 	flush_workqueue(charge->usb_charger_wq);
 	flush_workqueue(charge->dc_charger_wq);
 
