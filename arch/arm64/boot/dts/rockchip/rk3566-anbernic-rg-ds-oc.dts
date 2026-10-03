@@ -563,9 +563,13 @@
 
 		route {
 
+			/* One picture per screen, kept across the u-boot to kernel handover,
+			 * as on the RG DS Plus: the bottom panel shows logo_kernel.bmp and the
+			 * top panel logo.bmp, so nothing changes on screen when the kernel
+			 * takes over. */
 			route_dsi0: route-dsi0 {
 				status = "okay";
-				logo,uboot = "logo.bmp";
+				logo,uboot = "logo_kernel.bmp";
 				logo,kernel = "logo_kernel.bmp";
 				logo,mode = "center";
 				charge_logo,mode = "center";
@@ -579,7 +583,7 @@
 				 * one (page-1 0x37 = 0x09): rotate the logo and charge animation. */
 				logo,rotate = <180>;
 				logo,uboot = "logo.bmp";
-				logo,kernel = "logo_kernel.bmp";
+				logo,kernel = "logo.bmp";
 				logo,mode = "center";
 				charge_logo,mode = "center";
 				connect = <0x14>;
