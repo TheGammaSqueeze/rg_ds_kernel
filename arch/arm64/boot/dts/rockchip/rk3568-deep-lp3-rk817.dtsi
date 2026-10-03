@@ -297,7 +297,14 @@
 	
 	charge-animation {
 		compatible = "rockchip,uboot-charge";
-		rockchip,uboot-charge-on = <1>; /*1-enable uboot charge */
+		/* Powered-off charging goes to the kernel's charger mode, as on the RG DS.
+		 * With u-boot's own charge loop a long press is refused while the gauge
+		 * reads under uboot-exit-charge-voltage (3750 mV, above a healthy cell's
+		 * resting voltage up to ~35%), and u-boot charges at 1500 mA at most, so
+		 * the cell sits under the gate indefinitely; a press held on to the PMIC's
+		 * 6 s hard-off then restarts u-boot into a fresh animation. The kernel's
+		 * charger mode hands the power key to Android instead. */
+		rockchip,uboot-charge-on = <0>;
 		rockchip,android-charge-on = <0>;
 		rockchip,uboot-low-power-voltage = <3600>; //3350 force to charging,don't run os
 		rockchip,screen-on-voltage = <3650>; //3400
