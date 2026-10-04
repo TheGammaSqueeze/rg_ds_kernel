@@ -96,6 +96,9 @@ struct rk817_codec_priv {
 	 * a stream is running and the speaker/headphone PAs have to be re-gated
 	 * for the new path right away. */
 	bool dac_unmuted;
+	/* Sample rate in use when the codec was suspended; rk817->rate itself is
+	 * cleared by the full power down so resume can tell what to restore. */
+	unsigned int suspend_rate;
 	long int playback_path;
 	long int capture_path;
 
@@ -1104,6 +1107,62 @@ static int rk817_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	return 0;
 }
 
+/* The rate dependent part of hw_params: PLL divider, DAC/ADC sample rate
+ * selects and the clock restart. Also used by resume to put back the rate a
+ * stream had before the suspend power down cleared it. */
+static void rk817_apply_rate(struct snd_soc_component *component,
+			     unsigned int rate, unsigned char apll_cfg3_val,
+			     unsigned char sr_val, bool playback)
+{
+	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+	int ret;
+
+	ret = clk_set_rate(rk817->mclk, rk817->stereo_sysclk);
+	if (ret)
+		dev_warn(component->dev, "%s clk_set_rate %d failed\n",
+			 __func__, rk817->stereo_sysclk);
+	snd_soc_component_write(component, RK817_CODEC_APLL_CFG3, apll_cfg3_val);
+	snd_soc_component_update_bits(component, RK817_CODEC_DDAC_SR_LMT0,
+				      DACSRT_MASK, sr_val);
+	snd_soc_component_update_bits(component, RK817_CODEC_DADC_SR_ACL0,
+				      ADCSRT_MASK, sr_val);
+
+	if (playback)
+		rk817_restart_dac_digital_clk_and_apll(component);
+	else
+		rk817_restart_adc_digital_clk_and_apll(component);
+
+	rk817->rate = rate;
+}
+
+/* PLL divider and sample rate select for a rate, or false if unsupported. */
+static bool rk817_rate_regs(unsigned int rate, unsigned char *apll_cfg3_val,
+			    unsigned char *sr_val)
+{
+	switch (rate) {
+	case 8000:
+		*apll_cfg3_val = 0x03;
+		*sr_val = 0x00;
+		return true;
+	case 16000:
+		*apll_cfg3_val = 0x06;
+		*sr_val = 0x01;
+		return true;
+	case 96000:
+		*apll_cfg3_val = 0x18;
+		*sr_val = 0x03;
+		return true;
+	case 32000:
+	case 44100:
+	case 48000:
+		*apll_cfg3_val = 0x0c;
+		*sr_val = 0x02;
+		return true;
+	default:
+		return false;
+	}
+}
+
 static int rk817_hw_params(struct snd_pcm_substream *substream,
 			   struct snd_pcm_hw_params *params,
 			    struct snd_soc_dai *dai)
@@ -1113,7 +1172,6 @@ static int rk817_hw_params(struct snd_pcm_substream *substream,
 	unsigned int rate = params_rate(params);
 	unsigned char apll_cfg3_val;
 	unsigned char sr_val;  /* Sample rate value for DACSRT/ADCSRT */
-	unsigned int ret = 0;
 
 	DBG("%s : pre rate = %d, cur sample rate = %dHz, stream = %s\n",
 	    __func__, rk817->rate, rate,
@@ -1129,26 +1187,7 @@ static int rk817_hw_params(struct snd_pcm_substream *substream,
 		snd_soc_component_write(component, RK817_CODEC_APLL_CFG4, 0xa5);
 	}
 
-	switch (rate) {
-	case 8000:
-		apll_cfg3_val = 0x03;
-		sr_val = 0x00;
-		break;
-	case 16000:
-		apll_cfg3_val = 0x06;
-		sr_val = 0x01;
-		break;
-	case 96000:
-		apll_cfg3_val = 0x18;
-		sr_val = 0x03;
-		break;
-	case 32000:
-	case 44100:
-	case 48000:
-		apll_cfg3_val = 0x0c;
-		sr_val = 0x02;
-		break;
-	default:
+	if (!rk817_rate_regs(rate, &apll_cfg3_val, &sr_val)) {
 		pr_err("Unsupported rate: %d\n", rate);
 		return -EINVAL;
 	}
@@ -1166,24 +1205,9 @@ static int rk817_hw_params(struct snd_pcm_substream *substream,
 	 * affecting concurrent playback.
 	 */
 	if ((rk817->rate != rate) &&
-	    !((substream->stream == SNDRV_PCM_STREAM_CAPTURE) && rk817->pdmdata_out_enable)) {
-		ret = clk_set_rate(rk817->mclk, rk817->stereo_sysclk);
-		if (ret)
-			dev_warn(component->dev, "%s %d clk_set_rate %d failed\n",
-				 __func__, __LINE__, rk817->stereo_sysclk);
-		snd_soc_component_write(component, RK817_CODEC_APLL_CFG3, apll_cfg3_val);
-		snd_soc_component_update_bits(component, RK817_CODEC_DDAC_SR_LMT0,
-					      DACSRT_MASK, sr_val);
-		snd_soc_component_update_bits(component, RK817_CODEC_DADC_SR_ACL0,
-					      ADCSRT_MASK, sr_val);
-
-		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-			rk817_restart_dac_digital_clk_and_apll(component);
-		else
-			rk817_restart_adc_digital_clk_and_apll(component);
-
-		rk817->rate = rate;
-	}
+	    !((substream->stream == SNDRV_PCM_STREAM_CAPTURE) && rk817->pdmdata_out_enable))
+		rk817_apply_rate(component, rate, apll_cfg3_val, sr_val,
+				 substream->stream == SNDRV_PCM_STREAM_PLAYBACK);
 
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_S16_LE:
@@ -1219,6 +1243,13 @@ static int rk817_hw_params(struct snd_pcm_substream *substream,
 static void rk817_select_output_path(struct snd_soc_component *component)
 {
 	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+
+	/* Only ever called with the DAC unmuted. A full power down (suspend, or
+	 * a Playback Path trip through OFF under a running stream) clears the
+	 * I2S receive enable along with everything else, and nothing above
+	 * would set it again, so put it back with the output path. */
+	snd_soc_component_update_bits(component, RK817_CODEC_DTOP_DIGEN_CLKE,
+				      I2SRX_EN_MASK, I2SRX_EN);
 
 	switch (rk817->playback_path) {
 	case SPK_PATH:
@@ -1414,6 +1445,9 @@ static struct snd_soc_dai_driver rk817_dai[] = {
 
 static int rk817_suspend(struct snd_soc_component *component)
 {
+	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+
+	rk817->suspend_rate = rk817->rate;
 	rk817_codec_power_down(component, RK817_CODEC_ALL);
 	return 0;
 }
@@ -1421,13 +1455,30 @@ static int rk817_suspend(struct snd_soc_component *component)
 static int rk817_resume(struct snd_soc_component *component)
 {
 	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+	unsigned char apll_cfg3_val, sr_val;
 
-	if (rk817->resume_path) {
-		if (rk817->capture_path != MIC_OFF)
-			rk817_capture_path_config(component, OFF, rk817->capture_path);
-		if (rk817->playback_path != OFF)
-			rk817_playback_path_config(component, OFF, rk817->playback_path);
-	}
+	/* Suspend powered the whole codec down (reference, PLL, digital
+	 * clocks) while playback_path and capture_path kept their values. The
+	 * paths are always brought back here, not only when the HAL asked for
+	 * it through "Resume Path": a HAL that keeps its stream open across
+	 * sleep, as the low latency MMAP output does, never cycles the path
+	 * through OFF again, so without this the codec stayed silent until a
+	 * reboot. Re-applying the same path powers the blocks back up; the
+	 * amplifiers follow only if the DAC is currently unmuted. */
+	if (rk817->capture_path != MIC_OFF)
+		rk817_capture_path_config(component, OFF, rk817->capture_path);
+	if (rk817->playback_path != OFF)
+		rk817_playback_path_config(component, OFF, rk817->playback_path);
+
+	/* A stream that stays open across the suspend never calls hw_params
+	 * again, so the rate it was using is restored here as well. */
+	if (rk817->suspend_rate &&
+	    rk817_rate_regs(rk817->suspend_rate, &apll_cfg3_val, &sr_val))
+		rk817_apply_rate(component, rk817->suspend_rate, apll_cfg3_val,
+				 sr_val, rk817->playback_path != OFF);
+
+	if (rk817->playback_path != OFF && rk817->dac_unmuted)
+		rk817_select_output_path(component);
 
 	return 0;
 }
