@@ -1001,6 +1001,18 @@ static void rk8xx_device_shutdown(void)
 		reg = RK818_DEVCTRL_REG;
 		bit = DEV_OFF;
 		break;
+	case RK809_ID:
+	case RK817_ID:
+		/* Power the PMIC down from the register rather than leaving it to
+		 * the firmware's SLEEP pin power-down (PSCI SYSTEM_OFF). After a
+		 * sleep pin power-down the RK817 does not accept the power key
+		 * again until that pin has decayed low, which on the RG DS took
+		 * 20 to 30 seconds after "reboot: Power down"; after DEV_OFF the
+		 * key works at once. The SLPPIN_DN_FUN set up by the prepare
+		 * handler stays as the fallback should this write fail. */
+		reg = RK817_SYS_CFG(3);
+		bit = DEV_OFF;
+		break;
 	default:
 		return;
 	}
@@ -1495,6 +1507,7 @@ static int rk808_probe(struct i2c_client *client,
 		on_source = RK817_ON_SOURCE_REG;
 		off_source = RK817_OFF_SOURCE_REG;
 		of_property_prepare_fn = rk817_of_property_prepare;
+		device_shutdown_fn = rk8xx_device_shutdown;
 		break;
 	default:
 		dev_err(&client->dev, "Unsupported RK8XX ID %lu\n",
