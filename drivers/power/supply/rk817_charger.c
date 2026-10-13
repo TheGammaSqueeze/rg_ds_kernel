@@ -81,10 +81,12 @@ extern void led_chargr_status(int charger);
 /*
  * Die temperature bands from the four HOTDIE thresholds. The index is the
  * number of thresholds the die is above, so 0 is below 85C and 4 is at or
- * above 115C. Throttling starts at THERMAL_ACT_BAND, i.e. 105C and up.
+ * above 115C. Throttling starts at THERMAL_ACT_BAND, i.e. 95C and up: the
+ * hardware constant-temperature loop enabled in pre_init acts first, below
+ * 85C, so this band stepping is the backstop behind it.
  */
 #define THERMAL_BAND_COUNT		5
-#define THERMAL_ACT_BAND		3
+#define THERMAL_ACT_BAND		2
 #define SAMPLE_RES_10MR		10
 #define SAMPLE_RES_20MR		20
 #define SAMPLE_RES_DIV1		1
@@ -1526,6 +1528,28 @@ static void rk817_charge_pre_init(struct rk817_charger *charge)
 	charge->die_band = 0;
 	charge->thermal_action_band = THERMAL_ACT_BAND;
 	rk817_charge_set_chrg_current(charge, charge->thermal_chrg_current);
+
+	/* Hand the die its own current limiter. CHRG_CT_EN (0xE4 bit 3) is the
+	 * RK817's constant-temperature charging loop: the part pulls the charge
+	 * current back by itself once its die reaches the internal setpoint, with
+	 * no driver involvement. Its reset value is 0, and nothing in this driver
+	 * ever wrote it, so every RK817 platform using it has been charging with
+	 * the hardware protection switched off.
+	 *
+	 * Measured on an RG DS charging from empty, alternating the bit under a
+	 * fixed load: with a DS game running and the SoC zone at 66 to 76C it cut
+	 * the charge current from 2.63A to 2.21A, and the reduction tracked the
+	 * bit rather than the load (one cycle had identical temperatures on both
+	 * halves). Idle with the die cool it cost 1.2%, which is inside the noise
+	 * and went the other way in two of three cycles. So it is free when cool
+	 * and acts when hot, which is why it is enabled unconditionally here.
+	 *
+	 * Its setpoint is below 85C, the lowest HOTDIE threshold, so it engages
+	 * well before the software band stepping below; that is now the backstop
+	 * rather than the first line of defence. Field writes to CHRG_CUR_SEL
+	 * touch bits 2:0 only, so this survives every plug event.
+	 */
+	rk817_charge_field_write(charge, CHRG_CT_EN, ENABLE);
 
 	rk817_charge_set_chrg_finish_condition(charge);
 
