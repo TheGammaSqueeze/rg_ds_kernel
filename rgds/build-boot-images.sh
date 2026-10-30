@@ -152,9 +152,24 @@ for b in "${BITMAPS[@]}"; do
 done
 
 # ---- 3. assemble each variant ----------------------------------------------
+# KERNEL_LZ4=1 packs the kernel as an LZ4 frame (u-boot decompresses it to
+# kernel_addr_c). It must be a standard frame with independent blocks: u-boot's
+# lz4_is_valid_header() rejects the legacy format. The images get an _lz4 suffix
+# so they never silently replace the plain-Image ones. On the RG DS Plus this
+# halved a 3.6 s microSD read. Do not use it on the RG DS: its eMMC reads the
+# plain kernel faster than u-boot decompresses the LZ4 one, and the kernel
+# started 0.21 s later (2.026 s vs 1.817 s, measured 2026-10-30).
+BOOT_KERNEL="$IMG"; LZ4_SUFFIX=""
+if [ "${KERNEL_LZ4:-0}" = 1 ]; then
+  command -v lz4 >/dev/null || die "KERNEL_LZ4=1 needs lz4"
+  lz4 -f -q -12 -B7 -BI "$IMG" "$WORK/Image.lz4"
+  [ "$(od -An -tx1 -N4 "$WORK/Image.lz4" | tr -d ' ')" = 04224d18 ] || die "lz4 did not write a standard frame"
+  BOOT_KERNEL="$WORK/Image.lz4"; LZ4_SUFFIX="_lz4"
+  log "kernel packed as LZ4: $(stat -c%s "$IMG") -> $(stat -c%s "$BOOT_KERNEL") bytes"
+fi
 build_variant() {          # <variant-name or empty> <dtb-path>
   local name="$1" dtb="$2"
-  local img_name="boot${name:+_$name}.img"
+  local img_name="boot${name:+_$name}${LZ4_SUFFIX}.img"
   local vdir="$WORK/${name:-boot}"
   mkdir -p "$vdir/rsce"
   # rebuild the RSCE: our source-built dtb as rk-kernel.dtb (must be first), then bitmaps
@@ -165,7 +180,7 @@ build_variant() {          # <variant-name or empty> <dtb-path>
   # repack the boot image: fresh kernel + source dtb (header dtb section) + rebuilt RSCE + template ramdisk
   python3 "$MKBOOT" \
     --header_version "$HDRV" --os_version "$OSVER" --os_patch_level "$OSPATCH" \
-    --kernel "$IMG" --ramdisk "$WORK/tmpl/ramdisk" --second "$vdir/second" --dtb "$dtb" \
+    --kernel "$BOOT_KERNEL" --ramdisk "$WORK/tmpl/ramdisk" --second "$vdir/second" --dtb "$dtb" \
     --pagesize "$PAGESZ" --base "$BASE" --kernel_offset "$KOFF" --ramdisk_offset "$ROFF" \
     --second_offset "$SOFF" --tags_offset "$TOFF" --dtb_offset "$DOFF" --board '' \
     --cmdline "$CMDLINE" -o "$OUT/$img_name"
