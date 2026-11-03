@@ -57,6 +57,17 @@ config ROCKCHIP_VOP
 	  This selects support for the VOP driver. You should enable it
 	  on older SoCs.
 
+config GAMMAOS_OD
+	bool "System wide panel overdrive (VOP2)"
+	depends on DRM_ROCKCHIP=y && ROCKCHIP_VOP2
+	help
+	  Hands each full-screen linear RGB frame of a video port to a userspace
+	  helper (/dev/gammaos_od) that renders an overdriven copy on the GPU,
+	  and scans out that copy for one refresh, so every application's motion
+	  gets liquid crystal response compensation. Off until enabled per video
+	  port in /sys/class/misc/gammaos_od; frames pass through unchanged when
+	  the helper is absent or late.
+
 config ROCKCHIP_VOP2
 	bool "Rockchip VOP2 driver"
 	depends on CPU_RK3528 || CPU_RK3562 || CPU_RK3568 || CPU_RK3588 || \

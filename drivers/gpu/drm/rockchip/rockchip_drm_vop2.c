@@ -63,6 +63,10 @@
 #include "rockchip_vop_reg.h"
 #include "rockchip_post_csc.h"
 #include <linux/gammaos_bfi.h>
+#include "gammaos_od.h"
+
+/* System wide overdrive: the window that scans out an overdriven frame, per video port */
+static struct vop2_win *vop2_od_win[ROCKCHIP_MAX_CRTC];
 
 #define _REG_SET(vop2, name, off, reg, mask, v, relaxed) \
 		vop2_mask_write(vop2, off + reg.offset, mask, reg.shift, v, reg.write_mask, relaxed)
@@ -8866,6 +8870,33 @@ static void vop2_plane_atomic_update(struct drm_plane *plane, struct drm_atomic_
 	}
 
 	/*
+	 * System wide overdrive: the plane of the port that shows a whole screen of
+	 * linear RGB with no scaling, offset, mirroring or rotation may be scanned out
+	 * from an overdriven copy (gammaos_od.c). Its place in the stack does not
+	 * matter (drastic-nano keeps a static AFBC window under its frames on one
+	 * port); planes that do not qualify leave the overdrive state alone.
+	 */
+	{
+		struct drm_display_mode *mode = &crtc->state->adjusted_mode;
+		dma_addr_t od_addr;
+
+		if (vop2->version == VOP_VERSION_RK3568 && !vcstate->splice_mode &&
+		    !vpstate->afbc_en && !vpstate->tiled_en && !vpstate->xmirror_en &&
+		    !vpstate->ymirror_en && !vpstate->rotate_90_en && !vpstate->rotate_270_en &&
+		    !fb->format->is_yuv && vpstate->src.x1 == 0 && vpstate->src.y1 == 0 &&
+		    vpstate->src.x2 == (int)(fb->width << 16) &&
+		    vpstate->src.y2 == (int)(fb->height << 16) &&
+		    vpstate->dest.x1 == 0 && vpstate->dest.y1 == 0 &&
+		    vpstate->dest.x2 == mode->hdisplay && vpstate->dest.y2 == mode->vdisplay) {
+			gammaos_od_commit_begin(vp->id);
+			if (gammaos_od_frame(vp->id, fb, vpstate->yrgb_mst, &od_addr)) {
+				WRITE_ONCE(vop2_od_win[vp->id], win);
+				vpstate->yrgb_mst = od_addr;
+			}
+		}
+	}
+
+	/*
 	 * RK3572 Cluster0 and Cluster1 share a single AFBC decoder.
 	 * Cluster1 with afbc format should not be enabled before Cluster0.
 	 */
@@ -17471,6 +17502,25 @@ static void vop2_bfi_vblank_put(unsigned int vp_id)
 		drm_crtc_vblank_put(crtc);
 }
 
+/*
+ * System wide overdrive (gammaos_od.c): the frame start write that puts the
+ * application's own buffer back when no newer frame follows.
+ */
+static void vop2_od_revert(struct vop2_video_port *vp, dma_addr_t addr)
+{
+	struct vop2 *vop2 = vp->vop2;
+	struct vop2_win *win = READ_ONCE(vop2_od_win[vp->id]);
+
+	if (!win || vop2->version != VOP_VERSION_RK3568)
+		return;
+	VOP_WIN_SET(vop2, win, yrgb_mst, addr);
+	if (win->source_win)
+		VOP_WIN_SET(vop2, win->source_win, yrgb_mst, addr);
+	/* config done for this port, keeping the done bits of the others */
+	vop2_writel(vop2, 0, RK3568_VOP2_GLB_CFG_DONE_EN | BIT(vp->id) |
+		    (vop2_readl(vop2, RK3568_REG_CFG_DONE) & 0x7));
+}
+
 static irqreturn_t vop2_isr(int irq, void *data)
 {
 	struct vop2 *vop2 = data;
@@ -17578,6 +17628,12 @@ static irqreturn_t vop2_isr(int irq, void *data)
 				rockchip_drm_dbg(vop2->dev, VOP_DEBUG_VSYNC, "vsync_vp%d", vp->id);
 			}
 			gammaos_bfi_vblank(vp->id);
+			{
+				dma_addr_t od_rev;
+
+				if (gammaos_od_vblank(vp->id, &od_rev))
+					vop2_od_revert(vp, od_rev);
+			}
 			vop2_wb_handler(vp);
 			if (likely(!vp->skip_vsync) || (vp->layer_sel_update == false)) {
 				drm_crtc_handle_vblank(crtc);
@@ -20040,6 +20096,7 @@ static int vop2_bind(struct device *dev, struct device *master, void *data)
 		return -ENODEV;
 	vop2_bfi_owner = vop2;
 	gammaos_bfi_set_vblank_ctl(vop2_bfi_vblank_get, vop2_bfi_vblank_put);
+	gammaos_od_set_drm(vop2->drm_dev);
 
 	ret = vop2_gamma_init(vop2);
 	if (ret)
