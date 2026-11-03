@@ -9,6 +9,8 @@
 
 	backlight: backlight {
 		compatible = "pwm-backlight";
+		/* black frame insertion locks to the bottom panel, dsi0 on VP0 */
+		gammaos,bfi-vp = <0>;
 		pwms = <&pwm1 0 25000 0>;
 		brightness-levels = <
 			  0   3   4   5   7   9  12  15
@@ -52,6 +54,8 @@
 
 	backlight1: backlight1 {
 		compatible = "pwm-backlight";
+		/* black frame insertion locks to the top panel, dsi1 on VP1 */
+		gammaos,bfi-vp = <1>;
 		pwms = <&pwm2 0 25000 0>;
 		brightness-levels = <
 			  0   3   4   5   7   9  12  15
