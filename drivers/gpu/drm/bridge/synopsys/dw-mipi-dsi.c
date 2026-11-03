@@ -402,7 +402,14 @@ static void dw_mipi_message_config(struct dw_mipi_dsi *dsi,
 	ctrl = dsi_read(dsi, DSI_LPCLK_CTRL);
 	if (lpm) {
 		val |= ENABLE_LOW_POWER_CMD;
-		ctrl &= ~PHY_TXREQUESTCLKHS;
+		/*
+		 * With video running the panel locks onto the clock lane: keep it in
+		 * high speed and send the command in low power on the data lanes only,
+		 * in the blanking. Stopping the clock here blanks the panel until it is
+		 * initialised again.
+		 */
+		if (dsi_read(dsi, DSI_MODE_CFG) & ENABLE_CMD_MODE)
+			ctrl &= ~PHY_TXREQUESTCLKHS;
 	} else {
 		val &= ~ENABLE_LOW_POWER_CMD;
 		ctrl |= PHY_TXREQUESTCLKHS;
