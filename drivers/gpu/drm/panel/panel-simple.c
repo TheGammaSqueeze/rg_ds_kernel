@@ -5118,6 +5118,158 @@ static int panel_simple_dsi_of_get_desc_data(struct device *dev,
 	return 0;
 }
 
+/*
+ * Live panel register access, for tuning panel drive settings on a running
+ * screen (GammaOS). Root only. Nothing persists: the next panel power cycle
+ * replays the init table from the device tree.
+ *
+ *   gammaos_dcs       write commands as hex bytes, ";" between commands, each
+ *                     sent as a DCS write like the init table, e.g.
+ *                     "e0 01; 1c 05; e0 00". The words "lp" (low power
+ *                     transmission, as the init table) and "gen" (generic
+ *                     packets instead of DCS) anywhere apply to the whole write.
+ *   gammaos_dcs_read  write "<page> <reg> <count>" (hex page and register,
+ *                     decimal count, page "-" for no page select), then read the
+ *                     bytes back; pages are selected with E0 as on Jadard parts
+ *
+ * Commands go out in high speed mode. The panels' init table is sent in low
+ * power mode, and for a low power command the DSI host drops the clock lane out
+ * of high speed; with video running that stops the clock the panel locks onto
+ * and the panel blanks until it is initialised again. In high speed mode the
+ * host fits the command into the blanking periods and the clock keeps running.
+ */
+static int gammaos_dcs_xfer(struct mipi_dsi_device *dsi, const void *data, size_t len,
+			    bool lp, bool gen)
+{
+	unsigned long flags = dsi->mode_flags;
+	int r;
+
+	if (lp)
+		dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	else
+		dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	r = gen ? mipi_dsi_generic_write(dsi, data, len) : mipi_dsi_dcs_write_buffer(dsi, data, len);
+	dsi->mode_flags = flags;
+	return r;
+}
+
+static int gammaos_dcs_hs_write(struct mipi_dsi_device *dsi, const void *data, size_t len)
+{
+	return gammaos_dcs_xfer(dsi, data, len, false, false);
+}
+static DEFINE_MUTEX(gammaos_dcs_lock);
+static u8 gammaos_dcs_rd[16];
+static int gammaos_dcs_rd_len = -1;
+
+static int gammaos_dcs_page(struct mipi_dsi_device *dsi, int page)
+{
+	u8 b[2] = { 0xe0, (u8)page };
+
+	if (page < 0)
+		return 0;
+	return gammaos_dcs_hs_write(dsi, b, sizeof(b)) < 0 ? -EIO : 0;
+}
+
+static ssize_t gammaos_dcs_store(struct device *dev, struct device_attribute *a,
+				 const char *buf, size_t n)
+{
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
+	char *copy, *cur, *cmd;
+	ssize_t ret = n;
+
+	bool lp, gen;
+
+	copy = kstrndup(buf, n, GFP_KERNEL);
+	if (!copy)
+		return -ENOMEM;
+	lp = strstr(copy, "lp") != NULL;
+	gen = strstr(copy, "gen") != NULL;
+	mutex_lock(&gammaos_dcs_lock);
+	cur = copy;
+	while ((cmd = strsep(&cur, ";\n"))) {
+		u8 bytes[64];
+		int len = 0;
+		char *tok;
+
+		while ((tok = strsep(&cmd, " \t")) && len < (int)sizeof(bytes)) {
+			if (!*tok || !strcmp(tok, "lp") || !strcmp(tok, "gen"))
+				continue;
+			if (kstrtou8(tok, 16, &bytes[len++])) {
+				ret = -EINVAL;
+				goto out;
+			}
+		}
+		if (!len)
+			continue;
+		if (gammaos_dcs_xfer(dsi, bytes, len, lp, gen) < 0) {
+			ret = -EIO;
+			goto out;
+		}
+	}
+out:
+	mutex_unlock(&gammaos_dcs_lock);
+	kfree(copy);
+	return ret;
+}
+static DEVICE_ATTR_WO(gammaos_dcs);
+
+static ssize_t gammaos_dcs_read_store(struct device *dev, struct device_attribute *a,
+				      const char *buf, size_t n)
+{
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
+	char pg[8];
+	unsigned int reg, cnt;
+	int page = -1, r;
+
+	if (sscanf(buf, "%7s %x %u", pg, &reg, &cnt) != 3 || reg > 0xff || !cnt ||
+	    cnt > sizeof(gammaos_dcs_rd))
+		return -EINVAL;
+	if (strcmp(pg, "-") && kstrtoint(pg, 16, &page))
+		return -EINVAL;
+	mutex_lock(&gammaos_dcs_lock);
+	gammaos_dcs_rd_len = -1;
+	r = gammaos_dcs_page(dsi, page);
+	if (!r) {
+		unsigned long flags = dsi->mode_flags;
+
+		dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+		r = mipi_dsi_dcs_read(dsi, (u8)reg, gammaos_dcs_rd, cnt);
+		dsi->mode_flags = flags;
+		if (r >= 0)
+			gammaos_dcs_rd_len = r;
+	}
+	if (page >= 0)
+		gammaos_dcs_page(dsi, 0);
+	mutex_unlock(&gammaos_dcs_lock);
+	return r < 0 ? r : (ssize_t)n;
+}
+
+static ssize_t gammaos_dcs_read_show(struct device *dev, struct device_attribute *a, char *buf)
+{
+	ssize_t len = 0;
+	int i;
+
+	mutex_lock(&gammaos_dcs_lock);
+	if (gammaos_dcs_rd_len < 0)
+		len = sysfs_emit(buf, "none\n");
+	for (i = 0; i < gammaos_dcs_rd_len; i++)
+		len += sysfs_emit_at(buf, len, "%02x%s", gammaos_dcs_rd[i],
+				     i + 1 < gammaos_dcs_rd_len ? " " : "\n");
+	mutex_unlock(&gammaos_dcs_lock);
+	return len;
+}
+static DEVICE_ATTR(gammaos_dcs_read, 0600, gammaos_dcs_read_show, gammaos_dcs_read_store);
+
+static struct attribute *gammaos_dcs_attrs[] = {
+	&dev_attr_gammaos_dcs.attr,
+	&dev_attr_gammaos_dcs_read.attr,
+	NULL,
+};
+
+static const struct attribute_group gammaos_dcs_group = {
+	.attrs = gammaos_dcs_attrs,
+};
+
 static int panel_simple_dsi_probe(struct mipi_dsi_device *dsi)
 {
 	struct panel_simple *panel;
@@ -5175,6 +5327,9 @@ static int panel_simple_dsi_probe(struct mipi_dsi_device *dsi)
 	dsi->mode_flags = desc->flags;
 	dsi->format = desc->format;
 	dsi->lanes = desc->lanes;
+
+	if (sysfs_create_group(&dsi->dev.kobj, &gammaos_dcs_group))
+		dev_warn(dev, "no live panel register access\n");
 
 	err = mipi_dsi_attach(dsi);
 	if (err) {
