@@ -7,14 +7,17 @@ layout(std430, binding = 0) readonly buffer Src { uint px[]; } src;
 layout(std430, binding = 1) readonly buffer Prev { uint px[]; } prv;
 layout(std430, binding = 2) buffer State { uvec2 s[]; } st;	// packHalf2x16 (r,g), (b,-)
 layout(std430, binding = 3) writeonly buffer Out { uint px[]; } dst;
+// measured response: alpha reached by the end of one refresh for a transition from
+// level i*63.75 to level j*63.75, row major [from][to], 5 x 5
+layout(std140, binding = 4) uniform Lut { vec4 a[7]; } lut;	// 25 values packed four to a vec4
 
 layout(push_constant) uniform P {
 	uint w, h, src_pitch, prev_pitch, out_pitch;	// pitches in pixels
 	float held;		// refreshes the previous frame stayed on screen after its overdriven one
 	float init;		// 1: no history, pass through and seed the estimate
-	float pad;
+	float fall_strength;	// lut mode: strength for falling transitions (p1.w is for rising)
 	vec4 p0;		// rise alpha from black, rise alpha from white, curve (/16), fall alpha
-	vec4 p1;		// threshold, cap up, cap down (levels), unused
+	vec4 p1;		// threshold, cap up, cap down (levels), lut strength (0 = curve model)
 } pc;
 
 vec3 unpackpx(uint v) { return vec3(float((v >> 16) & 255u), float((v >> 8) & 255u), float(v & 255u)); }
@@ -25,6 +28,26 @@ vec3 rise_alpha(vec3 origin)
 	vec3 frac = clamp((255.0 - origin) / 255.0, 0.0, 1.0);
 	vec3 wf = frac + (frac * frac - frac) * (pc.p0.z - 1.0);
 	return pc.p0.y + (pc.p0.x - pc.p0.y) * wf;
+}
+
+float lut1(float from, float to)
+{
+	vec2 q = clamp(vec2(from, to) / 63.75, 0.0, 4.0);
+	ivec2 i = min(ivec2(q), ivec2(3));
+	vec2 f = q - vec2(i);
+	int k = i.x * 5 + i.y;
+	float a00 = lut.a[k >> 2][k & 3], a01 = lut.a[(k + 1) >> 2][(k + 1) & 3];
+	float a10 = lut.a[(k + 5) >> 2][(k + 5) & 3], a11 = lut.a[(k + 6) >> 2][(k + 6) & 3];
+	float a = mix(mix(a00, a01, f.y), mix(a10, a11, f.y), f.x);
+	// strength: 1 = the measured response, above 1 drives harder; rises and falls apart
+	return pow(clamp(a, 0.05, 1.0), to >= from ? pc.p1.w : pc.fall_strength);
+}
+
+vec3 alpha_for(vec3 from, vec3 to)
+{
+	if (pc.p1.w > 0.0)
+		return vec3(lut1(from.r, to.r), lut1(from.g, to.g), lut1(from.b, to.b));
+	return mix(vec3(pc.p0.w), rise_alpha(from), step(from, to));
 }
 
 void main()
@@ -42,15 +65,23 @@ void main()
 	}
 	uvec2 sv = st.s[si];
 	vec3 e = vec3(unpackHalf2x16(sv.x), unpackHalf2x16(sv.y).x);
+	// settled pixel (the common case): pass the target through, snap the estimate onto it
+	// and skip the model, so only changing pixels pay for it
+	if (pc.held < 0.5 && all(lessThanEqual(abs(c - e), vec3(pc.p1.x)))) {
+		if (any(notEqual(e, c)))
+			st.s[si] = uvec2(packHalf2x16(c.rg), packHalf2x16(vec2(c.b, 0.0)));
+		dst.px[g.y * pc.out_pitch + g.x] = packpx(c);
+		return;
+	}
 	if (pc.held > 0.5) {
 		// the plain previous frame stayed up: the crystal kept moving towards it
 		vec3 p = unpackpx(prv.px[g.y * pc.prev_pitch + g.x]);
-		vec3 a = mix(vec3(pc.p0.w), rise_alpha(e), step(e, p));
+		vec3 a = alpha_for(e, p);
 		e = p + (e - p) * pow(1.0 - a, vec3(pc.held));
 	}
 	vec3 d = c - e;
 	vec3 up = step(0.0, d);
-	vec3 a = clamp(mix(vec3(pc.p0.w), rise_alpha(e), up), 0.05, 1.0);
+	vec3 a = clamp(alpha_for(e, c), 0.05, 1.0);
 	vec3 drive = e + d / a;
 	drive = mix(max(min(drive, c), c - pc.p1.z), min(max(drive, c), c + pc.p1.y), up);
 	drive = floor(clamp(drive, 0.0, 255.0) + 0.5);

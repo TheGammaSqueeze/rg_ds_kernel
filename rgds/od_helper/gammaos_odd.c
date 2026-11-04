@@ -14,9 +14,15 @@
  * See od.comp for the model.
  *
  * Usage: gammaos_odd <profile file> <vp>:<width>x<height> [<vp>:<width>x<height>]
- * Profile file (one line, reread when it changes):
- *   rise_from_black rise_from_white curve fall threshold cap_up cap_down
- *   alphas in percent per refresh, curve 16 = linear, threshold and caps in 8-bit levels
+ * Profile file (reread when it changes):
+ *   line 1: rise_from_black rise_from_white curve fall threshold cap_up cap_down [lut strength
+ *           [fall_strength]]
+ *           alphas in percent per refresh, curve 16 = linear, threshold and caps in 8-bit
+ *           levels; lut 1 uses the measured response table instead of the curve, strength in
+ *           percent (100 = as measured, more drives harder) for rising transitions, and for
+ *           falling ones unless fall_strength is given
+ *   line 2: 25 table values, alpha reached in one refresh from level i*63.75 to level j*63.75,
+ *           row major [from][to] (optional; the RG DS Plus measurement is the default)
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -30,6 +36,7 @@
 #include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include <vulkan/vulkan.h>
 #include <android/log.h>
@@ -42,8 +49,18 @@
 #define MAX_SRC 16
 
 struct profile {
-	float rise_black, rise_white, curve, fall, thr, cap_up, cap_dn;
+	float rise_black, rise_white, curve, fall, thr, cap_up, cap_dn, lut, strength, fall_strength;
 };
+
+/* RG DS Plus bottom panel, 240 fps calibration of 2026-11-03 */
+static float lut_alpha[28] = {	/* 25 used, padded to whole vec4s for the uniform buffer */
+	0.72f, 0.55f, 0.72f, 0.75f, 0.87f,
+	0.87f, 0.72f, 0.63f, 0.70f, 0.84f,
+	0.67f, 0.68f, 0.72f, 0.78f, 0.87f,
+	0.66f, 0.67f, 0.65f, 0.72f, 0.85f,
+	0.64f, 0.72f, 0.67f, 0.70f, 0.72f,
+};
+static int lut_dirty = 1;
 
 struct vbuf {
 	VkBuffer buf;
@@ -70,7 +87,7 @@ struct port {
 
 struct push {
 	uint32_t w, h, src_pitch, prev_pitch, out_pitch;
-	float held, init, pad;
+	float held, init, fall_strength;
 	float p0[4], p1[4];
 };
 
@@ -86,7 +103,10 @@ static VkDescriptorPool dpool;
 static VkCommandPool cpool;
 static VkFence fence;
 static PFN_vkGetMemoryFdPropertiesKHR p_fd_props;
-static struct profile prof = { 90, 74, 22, 74, 8, 96, 96 };
+static VkBuffer lut_buf;
+static VkDeviceMemory lut_mem;
+static float *lut_map;
+static struct profile prof = { 90, 74, 22, 74, 8, 96, 96, 1, 97, 76 };	/* tuned on the RG DS Plus */
 
 #define VK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { LOGE("%s failed: %d", #x, r_); return -1; } } while (0)
 
@@ -102,11 +122,43 @@ static int load_profile(const char *path, time_t *mt)
 	f = fopen(path, "r");
 	if (!f)
 		return 0;
-	if (fscanf(f, "%f %f %f %f %f %f %f", &p.rise_black, &p.rise_white, &p.curve, &p.fall,
-		   &p.thr, &p.cap_up, &p.cap_dn) == 7) {
-		prof = p;
-		LOGI("profile: rise %.0f..%.0f curve %.0f fall %.0f thr %.0f caps %.0f/%.0f",
-		     p.rise_black, p.rise_white, p.curve, p.fall, p.thr, p.cap_up, p.cap_dn);
+	{
+		char line[512];
+		float t[25];
+		int n = 0, i;
+
+		p.lut = 0;
+		p.strength = 100;
+		p.fall_strength = -1;
+		if (fgets(line, sizeof(line), f) &&
+		    sscanf(line, "%f %f %f %f %f %f %f %f %f %f", &p.rise_black, &p.rise_white, &p.curve,
+			   &p.fall, &p.thr, &p.cap_up, &p.cap_dn, &p.lut, &p.strength, &p.fall_strength) >= 7) {
+			if (p.fall_strength < 0)
+				p.fall_strength = p.strength;
+			prof = p;
+			LOGI("profile: rise %.0f..%.0f curve %.0f fall %.0f thr %.0f caps %.0f/%.0f lut %.0f strength %.0f/%.0f",
+			     p.rise_black, p.rise_white, p.curve, p.fall, p.thr, p.cap_up, p.cap_dn, p.lut,
+			     p.strength, p.fall_strength);
+		}
+		if (fgets(line, sizeof(line), f)) {
+			char *c = line;
+
+			while (n < 25) {
+				char *e;
+
+				t[n] = strtof(c, &e);
+				if (e == c)
+					break;
+				c = e;
+				n++;
+			}
+			if (n == 25) {
+				for (i = 0; i < 25; i++)
+					lut_alpha[i] = t[i];
+				lut_dirty = 1;
+				LOGI("response table loaded from the profile");
+			}
+		}
 	}
 	fclose(f);
 	return 1;
@@ -228,9 +280,9 @@ static int vk_init(void)
 				   .ppEnabledExtensionNames = dexts };
 	VkQueueFamilyProperties qf[8];
 	uint32_t n = 1, nq = 8, i;
-	VkDescriptorSetLayoutBinding binds[4];
+	VkDescriptorSetLayoutBinding binds[5];
 	VkDescriptorSetLayoutCreateInfo dl = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-					       .bindingCount = 4, .pBindings = binds };
+					       .bindingCount = 5, .pBindings = binds };
 	VkPushConstantRange pr = { .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .size = sizeof(struct push) };
 	VkPipelineLayoutCreateInfo pl = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
 					  .pSetLayouts = &dslayout, .pushConstantRangeCount = 1,
@@ -239,9 +291,10 @@ static int vk_init(void)
 					.codeSize = sizeof(od_comp_spv), .pCode = od_comp_spv };
 	VkShaderModule mod;
 	VkComputePipelineCreateInfo cp = { .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
-	VkDescriptorPoolSize ps = { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 8 };
+	VkDescriptorPoolSize ps[2] = { { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 8 },
+				       { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 2 } };
 	VkDescriptorPoolCreateInfo dp = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 2,
-					  .poolSizeCount = 1, .pPoolSizes = &ps };
+					  .poolSizeCount = 2, .pPoolSizes = ps };
 	VkCommandPoolCreateInfo cpi = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 					.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT };
 	VkFenceCreateInfo fi = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
@@ -261,8 +314,10 @@ static int vk_init(void)
 	p_fd_props = (PFN_vkGetMemoryFdPropertiesKHR)vkGetDeviceProcAddr(dev, "vkGetMemoryFdPropertiesKHR");
 	if (!p_fd_props)
 		return -1;
-	for (i = 0; i < 4; i++)
-		binds[i] = (VkDescriptorSetLayoutBinding){ .binding = i, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+	for (i = 0; i < 5; i++)
+		binds[i] = (VkDescriptorSetLayoutBinding){ .binding = i,
+							   .descriptorType = i == 4 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER :
+										  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 							   .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT };
 	VK(vkCreateDescriptorSetLayout(dev, &dl, NULL, &dslayout));
 	VK(vkCreatePipelineLayout(dev, &pl, NULL, &playout));
@@ -275,6 +330,26 @@ static int vk_init(void)
 	cpi.queueFamilyIndex = qfam;
 	VK(vkCreateCommandPool(dev, &cpi, NULL, &cpool));
 	VK(vkCreateFence(dev, &fi, NULL, &fence));
+	{
+		VkBufferCreateInfo lb = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sizeof(lut_alpha),
+					  .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+					  .sharingMode = VK_SHARING_MODE_EXCLUSIVE };
+		VkMemoryAllocateInfo la = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+		VkMemoryRequirements mr;
+		int t;
+
+		VK(vkCreateBuffer(dev, &lb, NULL, &lut_buf));
+		vkGetBufferMemoryRequirements(dev, lut_buf, &mr);
+		t = mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+					    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		if (t < 0)
+			return -1;
+		la.allocationSize = mr.size;
+		la.memoryTypeIndex = (uint32_t)t;
+		VK(vkAllocateMemory(dev, &la, NULL, &lut_mem));
+		VK(vkBindBufferMemory(dev, lut_buf, lut_mem, 0));
+		VK(vkMapMemory(dev, lut_mem, 0, sizeof(lut_alpha), 0, (void **)&lut_map));
+	}
 	return 0;
 }
 
@@ -368,8 +443,8 @@ static struct src_buf *src_add(struct port *p, uint64_t id, int fd, unsigned pit
 static int render(struct port *p, const struct gammaos_od_job *job)
 {
 	struct src_buf *s = src_find(p, job->src_id), *pv;
-	VkDescriptorBufferInfo bi[4];
-	VkWriteDescriptorSet w[4];
+	VkDescriptorBufferInfo bi[5];
+	VkWriteDescriptorSet w[5];
 	VkCommandBufferBeginInfo cbi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 					 .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
 	VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &p->cmd };
@@ -386,19 +461,26 @@ static int render(struct port *p, const struct gammaos_od_job *job)
 	bi[1] = (VkDescriptorBufferInfo){ (pv ? pv : s)->b.buf, 0, VK_WHOLE_SIZE };
 	bi[2] = (VkDescriptorBufferInfo){ p->state.buf, 0, VK_WHOLE_SIZE };
 	bi[3] = (VkDescriptorBufferInfo){ p->out[job->out_index].buf, 0, VK_WHOLE_SIZE };
-	for (i = 0; i < 4; i++)
+	bi[4] = (VkDescriptorBufferInfo){ lut_buf, 0, VK_WHOLE_SIZE };
+	if (lut_dirty) {
+		memcpy(lut_map, lut_alpha, sizeof(lut_alpha));
+		lut_dirty = 0;
+	}
+	for (i = 0; i < 5; i++)
 		w[i] = (VkWriteDescriptorSet){ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = p->set,
 					       .dstBinding = (uint32_t)i, .descriptorCount = 1,
-					       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+					       .descriptorType = i == 4 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER :
+									  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 					       .pBufferInfo = &bi[i] };
-	vkUpdateDescriptorSets(dev, 4, w, 0, NULL);
+	vkUpdateDescriptorSets(dev, 5, w, 0, NULL);
 
 	pc = (struct push){ .w = p->w, .h = p->h, .src_pitch = s->pitch, .prev_pitch = (pv ? pv : s)->pitch,
 			    .out_pitch = p->w, .held = pv ? (float)job->held_frames : 0.0f,
-			    .init = p->primed ? 0.0f : 1.0f,
+			    .init = p->primed ? 0.0f : 1.0f, .fall_strength = prof.fall_strength / 100.0f,
 			    .p0 = { prof.rise_black / 100.0f, prof.rise_white / 100.0f, prof.curve / 16.0f,
 				    prof.fall / 100.0f },
-			    .p1 = { prof.thr, prof.cap_up, prof.cap_dn, 0.0f } };
+			    .p1 = { prof.thr, prof.cap_up, prof.cap_dn,
+				    prof.lut > 0.5f ? prof.strength / 100.0f : 0.0f } };
 
 	VK(vkResetCommandBuffer(p->cmd, 0));
 	VK(vkBeginCommandBuffer(p->cmd, &cbi));
@@ -482,7 +564,23 @@ int main(int argc, char **argv)
 				close(job.src_fd);
 			done.status = -EINVAL;
 		} else {
+			struct timespec t0, t1;
+			static double sum, worst;
+			static unsigned cnt;
+			double ms;
+
+			clock_gettime(CLOCK_MONOTONIC, &t0);
 			done.status = render(p, &job) ? -EIO : 0;
+			clock_gettime(CLOCK_MONOTONIC, &t1);
+			ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+			sum += ms;
+			if (ms > worst)
+				worst = ms;
+			if (++cnt == 120) {
+				LOGI("render: %.2f ms average, %.2f ms worst over 120 frames", sum / cnt, worst);
+				sum = worst = 0;
+				cnt = 0;
+			}
 		}
 		ioctl(odfd, GAMMAOS_OD_DONE, &done);
 		if ((++frames & 63) == 0)
