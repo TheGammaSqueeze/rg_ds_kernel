@@ -637,6 +637,11 @@ struct vop2_video_port {
 	struct drm_info_list *debugfs_files;
 	uint8_t id;
 	bool layer_sel_update;
+	/*
+	 * Config done held back until a later port of the same atomic
+	 * commit is flushed, so both ports latch from one register write.
+	 */
+	bool done_held;
 	bool xmirror_en;
 	bool need_reset_p2i_flag;
 	atomic_t post_buf_empty_flag;
@@ -1127,6 +1132,8 @@ struct vop2 {
 	spinlock_t reg_lock;
 	/* lock vop2 irq reg */
 	spinlock_t irq_lock;
+	/* config done bits of ports waiting for a later port of the same commit */
+	u32 held_done_bits;
 	/* protects crtc enable/disable */
 	struct mutex vop2_lock;
 	struct vop2_resource base_res;
@@ -2273,6 +2280,9 @@ static inline void rk3568_vop2_cfg_done(struct drm_crtc *crtc)
 	 * This is rather low probability for miss some done bit.
 	 */
 	val |= vop2_readl(vop2, RK3568_REG_CFG_DONE) & 0x7;
+	/* ports of this commit that were flushed earlier go out in the same write */
+	val |= vop2->held_done_bits;
+	vop2->held_done_bits = 0;
 
 	rockchip_drm_dbg(vop2->dev, VOP_DEBUG_CFG_DONE, "cfg_done: 0x%x\n", val);
 
@@ -16598,6 +16608,60 @@ static void vop2_wait_for_scan_timing_from_the_assigned_line(struct vop2_video_p
 			      wait_line, vcnt, ret);
 }
 
+/*
+ * Ports flushed by one atomic commit latch together (one config done write).
+ * Readable by userspace that times its commits against the vblank edge;
+ * writing N brings back the per port writes for comparison.
+ */
+static bool commit_latch_pair = true;
+module_param(commit_latch_pair, bool, 0644);
+MODULE_PARM_DESC(commit_latch_pair, "ports of one atomic commit latch from one config done write");
+
+/*
+ * True when another active port of this VOP is flushed after @crtc in the
+ * same atomic commit (drm_atomic_helper_commit_planes flushes the active
+ * CRTCs in state order). Writing the config done bits of both ports one
+ * after the other lets the pending done rule above wait a frame for the
+ * first port, or lets that port latch alone, so the panels of one commit
+ * would show it a frame apart.
+ */
+static bool vop2_crtc_flushed_before_sibling(struct drm_crtc *crtc,
+					     struct drm_atomic_state *state)
+{
+	struct vop2 *vop2 = to_vop2_video_port(crtc)->vop2;
+	struct drm_crtc_state *cstate;
+	struct drm_crtc *other;
+	bool after = false;
+	int i;
+
+	for_each_new_crtc_in_state(state, other, cstate, i) {
+		if (other == crtc) {
+			after = true;
+			continue;
+		}
+		if (after && cstate->active && other->helper_private &&
+		    to_vop2_video_port(other)->vop2 == vop2)
+			return true;
+	}
+	return false;
+}
+
+static void vop2_crtc_take_event(struct drm_crtc *crtc)
+{
+	struct vop2_video_port *vp = to_vop2_video_port(crtc);
+	unsigned long flags;
+
+	spin_lock_irqsave(&crtc->dev->event_lock, flags);
+	if (crtc->state->event) {
+		WARN_ON(drm_crtc_vblank_get(crtc) != 0);
+		WARN_ON(vp->event);
+
+		vp->event = crtc->state->event;
+		crtc->state->event = NULL;
+	}
+	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
+}
+
 static void vop2_crtc_atomic_flush(struct drm_crtc *crtc, struct drm_atomic_state *state)
 {
 	struct rockchip_crtc_state *vcstate = to_rockchip_crtc_state(crtc->state);
@@ -16617,6 +16681,7 @@ static void vop2_crtc_atomic_flush(struct drm_crtc *crtc, struct drm_atomic_stat
 	bool wb_mode = conn_state && conn_state->writeback_job && conn_state->writeback_job->fb;
 	bool dovi_mode = vop2_is_dovi_mode(vp) && vp->enabled_win_mask;
 	bool wb_oneframe_mode = false;
+	bool hold_done = false;
 
 	if (vop2->wb.regs)
 		wb_oneframe_mode = VOP_MODULE_GET(vop2, wb, one_frame_mode);
@@ -16704,9 +16769,24 @@ static void vop2_crtc_atomic_flush(struct drm_crtc *crtc, struct drm_atomic_stat
 	else
 		vop2_crtc_disable_line_flag_event(crtc);
 
+	if (READ_ONCE(commit_latch_pair) && vop2->version == VOP_VERSION_RK3568 &&
+	    !wb_mode && !dovi_mode &&
+	    !vcstate->mode_update && vop2_crtc_flushed_before_sibling(crtc, state)) {
+		u32 layer_sel_offset = vop2->layers[0].regs->layer_sel.offset;
+
+		/* a layer select change keeps its own wait for frame start */
+		hold_done = vop2_readl(vop2, layer_sel_offset) ==
+			    vop2->regsbak[layer_sel_offset >> 2];
+	}
+
 	spin_lock_irqsave(&vop2->irq_lock, flags);
 	vop2_wb_commit(crtc);
-	vop2_cfg_done(crtc);
+	if (hold_done) {
+		vop2->held_done_bits |= BIT(vp->id);
+		vp->done_held = true;
+	} else {
+		vop2_cfg_done(crtc);
+	}
 	vp->win_cfg_done_bits = 0;
 
 	if (vp->mcu_timing.mcu_pix_total)
@@ -16728,15 +16808,24 @@ static void vop2_crtc_atomic_flush(struct drm_crtc *crtc, struct drm_atomic_stat
 	 */
 	vp->layer_sel_update = false;
 
-	spin_lock_irqsave(&crtc->dev->event_lock, flags);
-	if (crtc->state->event) {
-		WARN_ON(drm_crtc_vblank_get(crtc) != 0);
-		WARN_ON(vp->event);
+	/*
+	 * A held port takes its event once its done bit is written, by the
+	 * last port of the commit, so a frame start in between cannot
+	 * complete the flip before the new configuration latched.
+	 */
+	if (!hold_done) {
+		vop2_crtc_take_event(crtc);
 
-		vp->event = crtc->state->event;
-		crtc->state->event = NULL;
+		for (i = 0; i < ARRAY_SIZE(vop2->vps); i++) {
+			struct vop2_video_port *held = &vop2->vps[i];
+
+			if (held == vp || !held->done_held)
+				continue;
+			held->done_held = false;
+			vop2_wait_for_irq_handler(&held->rockchip_crtc.crtc);
+			vop2_crtc_take_event(&held->rockchip_crtc.crtc);
+		}
 	}
-	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
 
 	for_each_old_plane_in_state(old_state, plane, old_pstate, i) {
 		if (!old_pstate->fb)
