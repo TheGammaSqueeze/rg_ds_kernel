@@ -12,6 +12,7 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/fb.h>
+#include <linux/gammaos_bfi.h>
 #include <linux/backlight.h>
 #include <linux/err.h>
 #include <linux/pwm.h>
@@ -42,6 +43,7 @@ struct pwm_bl_data {
 					int brightness);
 	int			(*check_fb)(struct device *, struct fb_info *);
 	void			(*exit)(struct device *);
+	struct gammaos_bfi	*bfi;
 };
 
 static void pwm_backlight_power_on(struct pwm_bl_data *pb)
@@ -72,6 +74,9 @@ static void pwm_backlight_power_on(struct pwm_bl_data *pb)
 static void pwm_backlight_power_off(struct pwm_bl_data *pb)
 {
 	struct pwm_state state;
+
+	/* black frame insertion hands the PWM back before it is switched off */
+	gammaos_bfi_set_level(pb->bfi, 0);
 
 	pwm_get_state(pb->pwm, &state);
 	if (!pb->enabled && !state.enabled)
@@ -122,8 +127,19 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 	if (brightness > 0) {
 		pwm_get_state(pb->pwm, &state);
 		state.duty_cycle = compute_duty_cycle(pb, brightness);
-		pwm_apply_state(pb->pwm, &state);
-		pwm_backlight_power_on(pb);
+		if (gammaos_bfi_enabled(pb->bfi) && state.period) {
+			/*
+			 * Black frame insertion drives the PWM itself: the brightness
+			 * becomes the length of the one lit pulse per frame.
+			 */
+			pwm_backlight_power_on(pb);
+			gammaos_bfi_set_level(pb->bfi,
+				(u32)div_u64((u64)state.duty_cycle * 1024, state.period));
+		} else {
+			gammaos_bfi_set_level(pb->bfi, 0);
+			pwm_apply_state(pb->pwm, &state);
+			pwm_backlight_power_on(pb);
+		}
 	} else {
 		pwm_backlight_power_off(pb);
 	}
@@ -630,6 +646,12 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 		bl->props.brightness = data->dft_brightness;
 
 	bl->props.power = pwm_backlight_initial_power_state(pb);
+	{
+		u32 vp;
+
+		if (!of_property_read_u32(pdev->dev.of_node, "gammaos,bfi-vp", &vp))
+			pb->bfi = gammaos_bfi_attach(bl, pb->pwm, vp);
+	}
 	backlight_update_status(bl);
 
 	platform_set_drvdata(pdev, bl);
@@ -646,6 +668,8 @@ static int pwm_backlight_remove(struct platform_device *pdev)
 	struct backlight_device *bl = platform_get_drvdata(pdev);
 	struct pwm_bl_data *pb = bl_get_data(bl);
 
+	gammaos_bfi_detach(pb->bfi);
+	pb->bfi = NULL;
 	backlight_device_unregister(bl);
 	pwm_backlight_power_off(pb);
 

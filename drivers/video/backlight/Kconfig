@@ -248,6 +248,16 @@ config BACKLIGHT_PWM
 	  If you have a LCD backlight adjustable by PWM, say Y to enable
 	  this driver.
 
+config GAMMAOS_BFI
+	bool "Black frame insertion for PWM backlights"
+	depends on BACKLIGHT_PWM=y && PWM_ROCKCHIP && HIGH_RES_TIMERS
+	help
+	  Lets a PWM backlight light only part of each panel frame, locked to
+	  the display controller's frame start, to cut the sample-and-hold blur
+	  of moving pictures. Only backlights whose device tree node carries
+	  "gammaos,bfi-vp" (the video port of their panel) get it, and it is
+	  off until enabled through the bfi_* files in sysfs.
+
 config BACKLIGHT_DA903X
 	tristate "Backlight Driver for DA9030/DA9034 using WLED"
 	depends on PMIC_DA903X

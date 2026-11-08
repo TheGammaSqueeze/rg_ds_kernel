@@ -62,6 +62,7 @@
 #include "rockchip_drm_vop.h"
 #include "rockchip_vop_reg.h"
 #include "rockchip_post_csc.h"
+#include <linux/gammaos_bfi.h>
 
 #define _REG_SET(vop2, name, off, reg, mask, v, relaxed) \
 		vop2_mask_write(vop2, off + reg.offset, mask, reg.shift, v, reg.write_mask, relaxed)
@@ -17526,6 +17527,39 @@ static void vop2_frac_mvrr_update(struct drm_crtc *crtc, struct vop2_video_port 
 	}
 }
 
+/*
+ * Black frame insertion restarts its backlight pulse from the frame start
+ * interrupt, so while it is on it keeps that interrupt running even when nothing
+ * waits for vblank (a static screen).
+ */
+static struct vop2 *vop2_bfi_owner;
+
+static struct drm_crtc *vop2_bfi_crtc(unsigned int vp_id)
+{
+	struct vop2 *vop2 = READ_ONCE(vop2_bfi_owner);
+	struct drm_crtc *crtc;
+
+	if (!vop2 || vp_id >= vop2->data->nr_vps || vp_id >= ROCKCHIP_MAX_CRTC)
+		return NULL;
+	crtc = &vop2->vps[vp_id].rockchip_crtc.crtc;
+	return crtc->dev ? crtc : NULL;
+}
+
+static int vop2_bfi_vblank_get(unsigned int vp_id)
+{
+	struct drm_crtc *crtc = vop2_bfi_crtc(vp_id);
+
+	return crtc ? drm_crtc_vblank_get(crtc) : -ENODEV;
+}
+
+static void vop2_bfi_vblank_put(unsigned int vp_id)
+{
+	struct drm_crtc *crtc = vop2_bfi_crtc(vp_id);
+
+	if (crtc)
+		drm_crtc_vblank_put(crtc);
+}
+
 static irqreturn_t vop2_isr(int irq, void *data)
 {
 	struct vop2 *vop2 = data;
@@ -17632,6 +17666,7 @@ static irqreturn_t vop2_isr(int irq, void *data)
 			} else {
 				rockchip_drm_dbg(vop2->dev, VOP_DEBUG_VSYNC, "vsync_vp%d", vp->id);
 			}
+			gammaos_bfi_vblank(vp->id);
 			vop2_wb_handler(vp);
 			if (likely(!vp->skip_vsync) || (vp->layer_sel_update == false)) {
 				drm_crtc_handle_vblank(crtc);
@@ -20092,6 +20127,8 @@ static int vop2_bind(struct device *dev, struct device *master, void *data)
 	registered_num_crtcs = vop2_create_crtc(vop2, enabled_vp_mask);
 	if (registered_num_crtcs <= 0)
 		return -ENODEV;
+	vop2_bfi_owner = vop2;
+	gammaos_bfi_set_vblank_ctl(vop2_bfi_vblank_get, vop2_bfi_vblank_put);
 
 	ret = vop2_gamma_init(vop2);
 	if (ret)
@@ -20162,6 +20199,11 @@ static void vop2_unbind(struct device *dev, struct device *master, void *data)
 	struct list_head *crtc_list = &drm_dev->mode_config.crtc_list;
 	struct drm_crtc *crtc, *tmpc;
 	struct drm_plane *plane, *tmpp;
+
+	if (vop2_bfi_owner == vop2) {
+		gammaos_bfi_set_vblank_ctl(NULL, NULL);
+		WRITE_ONCE(vop2_bfi_owner, NULL);
+	}
 
 	rockchip_vop2_devfreq_uninit(vop2);
 	pm_runtime_disable(dev);
