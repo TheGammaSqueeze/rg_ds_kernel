@@ -2853,10 +2853,14 @@
 					vactive = <0x1e0>;
 					hsync-len = <0xdc>;
 					hback-porch = <0x104>;
-					hfront-porch = <0x136>;
+					/* 59.8276 Hz, just above the refresh of a DS (59.8261 Hz):
+					 * 42.9 MHz / (1406 x 510). Only the front porches moved (310 -> 286,
+					 * 2 -> 12); the pixel clock, and with it the DSI lane rate, is the one
+					 * of the 60.000 Hz timing (1430 x 500). */
+					hfront-porch = <0x11e>;
 					vsync-len = <0x02>;
 					vback-porch = <0x10>;
-					vfront-porch = <0x02>;
+					vfront-porch = <0x0c>;
 					hsync-active = <0x00>;
 					vsync-active = <0x00>;
 					de-active = <0x00>;
@@ -2969,10 +2973,10 @@
 					vactive = <0x1e0>;
 					hsync-len = <0xdc>;
 					hback-porch = <0x104>;
-					hfront-porch = <0x136>;
+					hfront-porch = <0x11e>;
 					vsync-len = <0x02>;
 					vback-porch = <0x10>;
-					vfront-porch = <0x02>;
+					vfront-porch = <0x0c>;
 					hsync-active = <0x00>;
 					vsync-active = <0x00>;
 					de-active = <0x00>;
