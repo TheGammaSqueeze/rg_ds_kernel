@@ -2810,7 +2810,7 @@
 				native-mode = <0x9d>;
 
 				timing0: timing0 {
-					clock-frequency = <0x29020c0>;
+					clock-frequency = <0x28e9a20>;
 					hactive = <0x280>;
 					vactive = <0x1e0>;
 					hsync-len = <0xdc>;
@@ -2818,7 +2818,7 @@
 					hfront-porch = <0x11e>;
 					vsync-len = <0x02>;
 					vback-porch = <0x10>;
-					vfront-porch = <0x0d>;
+					vfront-porch = <0x0c>;
 					hsync-active = <0x00>;
 					vsync-active = <0x00>;
 					de-active = <0x00>;
@@ -2926,7 +2926,7 @@
 				phandle = <0x19c>;
 
 				dsi1_timing: timing {
-					clock-frequency = <0x29020c0>;
+					clock-frequency = <0x28e9a20>;
 					hactive = <0x280>;
 					vactive = <0x1e0>;
 					hsync-len = <0xdc>;
@@ -2934,7 +2934,7 @@
 					hfront-porch = <0x11e>;
 					vsync-len = <0x02>;
 					vback-porch = <0x10>;
-					vfront-porch = <0x0d>;
+					vfront-porch = <0x0c>;
 					hsync-active = <0x00>;
 					vsync-active = <0x00>;
 					de-active = <0x00>;
