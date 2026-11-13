@@ -16738,9 +16738,19 @@ static void vop2_crtc_atomic_flush(struct drm_crtc *crtc, struct drm_atomic_stat
 	else
 		vop2_crtc_disable_line_flag_event(crtc);
 
+	/*
+	 * Only a commit that sets no mode on this port is held, which is what the
+	 * commit's own modeset flags say. vcstate->mode_update does not: it is
+	 * the result of the last atomic_enable of the port (true at every enable,
+	 * vop2_crtc_mode_update() compares crtc_clock * 100 with the dclk rate in
+	 * Hz) and every state duplicated afterwards copies it, so from the first
+	 * enable after boot (screen off and on, resume) until the next reboot no
+	 * commit was held and the ports were written one by one again.
+	 */
 	if (READ_ONCE(commit_latch_pair) && vop2->version == VOP_VERSION_RK3568 &&
 	    !wb_mode && !dovi_mode &&
-	    !vcstate->mode_update && vop2_crtc_flushed_before_sibling(crtc, state)) {
+	    !drm_atomic_crtc_needs_modeset(crtc->state) &&
+	    vop2_crtc_flushed_before_sibling(crtc, state)) {
 		u32 layer_sel_offset = vop2->layers[0].regs->layer_sel.offset;
 
 		/* a layer select change keeps its own wait for frame start */
